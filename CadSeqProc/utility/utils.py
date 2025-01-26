@@ -1,7 +1,11 @@
+"""
+General utility functions for enhanced geometry system.
+"""
+
 import math
 import matplotlib.pyplot
 import numpy as np
-from typing import List
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 import sys
 import os
@@ -48,9 +52,162 @@ from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 import torch.nn.functional as F
 # from .decorator import measure_performance
 from OCC.Core.BRepTools import breptools_Write
+from .logger import setup_logger
 
+logger = setup_logger(__name__)
 
+def normalize_vector(vector: List[float]) -> List[float]:
+    """Normalize a vector to unit length."""
+    array = np.array(vector)
+    norm = np.linalg.norm(array)
+    if norm == 0:
+        return vector
+    return (array / norm).tolist()
 
+def compute_normal(points: List[List[float]]) -> List[float]:
+    """Compute normal vector from points."""
+    if len(points) < 3:
+        return [0.0, 0.0, 1.0]
+    
+    # Convert to numpy arrays
+    p0 = np.array(points[0])
+    p1 = np.array(points[1])
+    p2 = np.array(points[2])
+    
+    # Compute vectors
+    v1 = p1 - p0
+    v2 = p2 - p0
+    
+    # Compute normal
+    normal = np.cross(v1, v2)
+    norm = np.linalg.norm(normal)
+    
+    if norm == 0:
+        return [0.0, 0.0, 1.0]
+    
+    return (normal / norm).tolist()
+
+def compute_centroid(points: List[List[float]]) -> List[float]:
+    """Compute centroid of points."""
+    if not points:
+        return [0.0, 0.0, 0.0]
+    
+    array = np.array(points)
+    return np.mean(array, axis=0).tolist()
+
+def compute_bounding_box(points: List[List[float]]) -> Tuple[List[float], List[float]]:
+    """Compute bounding box of points."""
+    if not points:
+        return ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+    
+    array = np.array(points)
+    min_point = np.min(array, axis=0).tolist()
+    max_point = np.max(array, axis=0).tolist()
+    
+    return (min_point, max_point)
+
+def compute_distance(point1: List[float], point2: List[float]) -> float:
+    """Compute distance between two points."""
+    return float(np.linalg.norm(np.array(point1) - np.array(point2)))
+
+def interpolate_points(point1: List[float], point2: List[float],
+                      t: float) -> List[float]:
+    """Linearly interpolate between two points."""
+    p1 = np.array(point1)
+    p2 = np.array(point2)
+    return (p1 + t * (p2 - p1)).tolist()
+
+def rotate_point(point: List[float], axis: List[float],
+                angle: float) -> List[float]:
+    """Rotate point around axis by angle (radians)."""
+    # Convert to numpy arrays
+    p = np.array(point)
+    a = np.array(normalize_vector(axis))
+    
+    # Compute rotation matrix
+    c = np.cos(angle)
+    s = np.sin(angle)
+    t = 1 - c
+    
+    x, y, z = a
+    R = np.array([
+        [t*x*x + c,    t*x*y - s*z,  t*x*z + s*y],
+        [t*x*y + s*z,  t*y*y + c,    t*y*z - s*x],
+        [t*x*z - s*y,  t*y*z + s*x,  t*z*z + c]
+    ])
+    
+    # Apply rotation
+    return np.dot(R, p).tolist()
+
+def scale_point(point: List[float], scale: Union[float, List[float]]) -> List[float]:
+    """Scale point by factor(s)."""
+    p = np.array(point)
+    s = np.array(scale) if isinstance(scale, list) else scale
+    return (p * s).tolist()
+
+def transform_point(point: List[float], matrix: List[List[float]]) -> List[float]:
+    """Transform point by 4x4 matrix."""
+    # Convert to homogeneous coordinates
+    p = np.array([*point, 1.0])
+    m = np.array(matrix)
+    
+    # Apply transformation
+    result = np.dot(m, p)
+    
+    # Convert back to 3D
+    if result[3] != 0:
+        result = result / result[3]
+    
+    return result[:3].tolist()
+
+def load_json(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Load JSON file with error handling."""
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading JSON file: {str(e)}")
+        return {}
+
+def save_json(data: Dict[str, Any], file_path: Union[str, Path]) -> bool:
+    """Save data to JSON file with error handling."""
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving JSON file: {str(e)}")
+        return False
+
+def ensure_directory(directory: Union[str, Path]) -> bool:
+    """Ensure directory exists, create if necessary."""
+    try:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        return True
+    except Exception as e:
+        logger.error(f"Error creating directory: {str(e)}")
+        return False
+
+def format_number(value: float, precision: int = 3) -> str:
+    """Format number with specified precision."""
+    return f"{value:.{precision}f}"
+
+def parse_vector(text: str) -> Optional[List[float]]:
+    """Parse vector from string representation."""
+    try:
+        # Remove brackets and split
+        clean = text.strip('[]() ').replace(',', ' ')
+        components = clean.split()
+        
+        # Convert to floats
+        return [float(x) for x in components]
+    except Exception as e:
+        logger.error(f"Error parsing vector: {str(e)}")
+        return None
+
+def format_vector(vector: List[float], precision: int = 3) -> str:
+    """Format vector as string."""
+    return f"[{', '.join(format_number(x, precision) for x in vector)}]"
 
 def find_response(prompt_ZE, emb_dir, response_dir):
     response_name=None
@@ -419,122 +576,6 @@ def get_sketch_extrusion_pos(vec, ext_token=6, sketch_token=2, remove_less=True)
     return skt_pos_list, ext_pos_list
 
 
-# def create_index_vec(vec, prev_index_vec):
-#     """
-#     Create index vector for the last token given previous tokens and previous index vectors. (Extrusion First)
-
-#     Args:
-#         vec (torch.Tensor): The input tensor of shape (B, N, 2) representing CAD sketches.
-#         prev_index_vec (torch.Tensor): The previous index tensor of shape (B, N-1, 2).
-
-#     Returns:
-#         new_index_vec (torch.Tensor): The updated index tensor of shape (B, 1).
-#     """
-#     # Initialize a new index tensor with ones
-#     new_index_vec = torch.ones_like(prev_index_vec[:, -1]) * prev_index_vec[:, -1]
-
-#     # Determine positions where extrusion ends
-#     extrusion_end_pos = vec[:, -2, 0] == END_TOKEN.index("END_SKETCH")
-
-#     # Get the previous index values
-#     prev_index = prev_index_vec[:, -1]
-
-#     # Update index values for extrusion end positions
-#     new_index_vec[extrusion_end_pos] = torch.clip(
-#         prev_index + 1, min=0, max=CAD_CLASS_INFO["index_size"] - 1
-#     )[extrusion_end_pos]
-
-#     # Determine positions where sketch starts
-#     start_pos = vec[:, -1, 0] == END_TOKEN.index("START")
-
-#     # Update index values for sketch start positions
-#     new_index_vec[start_pos] = torch.clip(
-#         prev_index, min=0, max=CAD_CLASS_INFO["index_size"]
-#     )[start_pos]
-
-#     # Determine positions of padding tokens and those that were not padding previously
-#     padding_pos = vec[:, -1, 0] == END_TOKEN.index("PADDING")
-#     prev_not_padding_pos = vec[:, -2, 0] != END_TOKEN.index("PADDING")
-#     mask_new_pad = torch.logical_and(
-#         padding_pos, prev_not_padding_pos
-#     )  # For the first padding token
-#     mask_old_pad = torch.logical_and(
-#         padding_pos, ~prev_not_padding_pos
-#     )  # From the second padding token onwards
-
-#     # Update index values for new and old padding positions
-#     new_index_vec[mask_new_pad] = torch.clip(
-#         prev_index + 1, min=0, max=CAD_CLASS_INFO["index_size"] - 1
-#     )[mask_new_pad]
-#     new_index_vec[mask_old_pad] = torch.clip(
-#         prev_index, min=0, max=CAD_CLASS_INFO["index_size"] - 1
-#     )[mask_old_pad]
-
-#     # Reshape the index tensor
-#     return new_index_vec.reshape(-1, 1)
-
-
-
-
-
-# def create_flag_vec(vec, prev_flag_vec):
-#     """
-#     Create flag vector given a CAD sequence and previous flag vectors. (Extrusion First)
-
-#     Args:
-#         vec (torch.Tensor): The input tensor of shape (B, N, 2) representing CAD sketches.
-#         prev_flag_vec (torch.Tensor): The previous flag tensor of shape (B, N-1, 2).
-
-#     Returns:
-#         new_flag_vec (torch.Tensor): The updated flag tensor of shape (B, N, 2).
-#     """
-
-#     # Initialize a new flag tensor with zeros
-#     new_flag_vec = torch.zeros_like(prev_flag_vec[:, -1])
-
-#     # Determine positions of sketches
-#     sketch_pos = prev_flag_vec[:, -1] == 0
-
-#     # Check if there are at least 3 previous flag vectors
-#     if prev_flag_vec.shape[1] > 2:
-#         # Determine positions of extrude distance
-#         extrude_dist_pos = torch.logical_and(
-#             prev_flag_vec[:, -1] == 1, prev_flag_vec[:, -2] != 1
-#         )
-
-#         # Check if there are more than 11 tokens in the input vector (since first 11 tokens belong to extrusions)
-#         if vec.shape[1] > 11:
-#             # Check if the previous token type indicates an end sketch
-#             prev_token_type = vec[:, -2, 0] == END_TOKEN.index("END_SKETCH")
-
-#             # Update flag values based on different conditions
-#             new_flag_vec[torch.logical_and(~sketch_pos, ~extrude_dist_pos)] = (
-#                 prev_flag_vec[:, -1][torch.logical_and(~sketch_pos, ~extrude_dist_pos)]
-#                 + 1
-#             ) % (CAD_CLASS_INFO["flag_size"] - 1)
-#             new_flag_vec[torch.logical_and(~sketch_pos, extrude_dist_pos)] = 1
-#             new_flag_vec[prev_token_type] = 1
-
-#             # Check if the current token type indicates a sequence start or end
-#             end_token_type = vec[:, -1, 0] == END_TOKEN.index("START")
-#             new_flag_vec[end_token_type] = 0
-#         else:
-#             # Update flag values for extrude distances and sketches
-#             new_flag_vec[~extrude_dist_pos] += (
-#                 prev_flag_vec[:, -1][~extrude_dist_pos] + 1
-#             ) % (CAD_CLASS_INFO["flag_size"] - 1)
-#             new_flag_vec[extrude_dist_pos] = 1
-#     else:
-#         # If there are fewer than 3 previous flag vectors, simply increment the flag
-#         new_flag_vec += 1
-
-#     # Identify positions of padding tokens and assign the corresponding flag value
-#     padding_pos = vec[:, -1, 0] == END_TOKEN.index("PADDING")
-#     new_flag_vec[padding_pos] = CAD_CLASS_INFO["flag_size"] - 1
-
-#     # Reshape the flag tensor
-#     return new_flag_vec.reshape(-1, 1)
-
 def create_index_vec(vec, prev_index_vec):
     """
     Create index vector for the last token given previous tokens and previous index vectors. (Sketch First)
@@ -900,11 +941,8 @@ def merge_end_tokens_from_loop(lp):
     if n == 1:  # If there is only one curve token (e.g., for a circle)
         paired_curve_token.append(curve_tokens)
     else:  # If there are multiple curve tokens
-        paired_curve_token_loop = (
-            []
-        )  # List to store the paired curve tokens for each loop
+        paired_curve_token_loop = []
         for i in range(n):
-            # Concatenate the current curve token with the next curve token (wrapping around to the first token)
             paired_curve_token_loop.append(
                 np.concatenate([curve_tokens[i], curve_tokens[(i + 1) % n][:1]])
             )
@@ -2137,6 +2175,8 @@ def rotation_mat_to_euler_from_vec(vec, if_quantize=True, n_bit=N_BIT):
     angles = R.from_matrix(mat).as_euler("xyz", degrees=False)
 
     if if_quantize:
-        theta = quantize(theta, n_bits=6, min_range=-1)
+        theta = quantize(angles[0], n_bits=6, min_range=-1)
+        phi = quantize(angles[1], n_bits=6, min_range=-1)
+        gamma = quantize(angles[2], n_bits=6, min_range=-1)
 
     return theta, phi, gamma

@@ -1,243 +1,212 @@
 """
-Factory class for generating organic shapes from basic primitives.
-Supports both geometric and organic shape generation with advanced patterns.
+Factory for creating geometric and organic shapes.
 """
 
+from typing import Dict, Any, List, Optional, Union
 import numpy as np
-from typing import List, Optional, Dict, Any
-from .base import Point, GeometricEntity
+from .base import BaseGeometry, Point, BoundingBox
 from .nurbs import NURBSCurve, NURBSSurface
 from .organic import OrganicSurface
-from .parametric import FlowerPetal, PatternGenerator, OrganicPatternFactory
+from ..utility.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class OrganicShapeFactory:
-    """Factory for creating organic shapes with advanced patterns."""
+    """Factory for creating organic shapes."""
     
-    @staticmethod
-    def create_petal(
-        length: float,
-        width: float,
-        curve_factor: float = 0.3,
-        twist_angle: Optional[float] = None
-    ) -> OrganicSurface:
-        """Generate a petal shape with optional twist."""
-        # Create base petal curve
-        petal = FlowerPetal(length, width, curve_factor)
-        curve = petal.to_nurbs()
-        
-        # Create surface by extruding curve
-        control_points = []
-        for t in np.linspace(0, 1, 10):
-            points = curve.sample_points(20)
-            # Add thickness variation
-            thickness = 0.1 * (1 - t)  # Taper towards tip
-            offset = np.array([0, 0, thickness])
-            control_points.append([Point(p.x, p.y, p.z + offset[2]) for p in points])
-        
-        surface = NURBSSurface.from_points(control_points)
-        
-        # Apply twist if specified
-        if twist_angle is not None:
-            return OrganicSurface([surface], {
-                'twist': {
-                    'axis': [0, 0, 1],
-                    'angle': twist_angle,
-                    'center': [0, 0, 0]
-                }
-            })
-        
-        return OrganicSurface([surface])
+    def create_from_params(self, params: Dict[str, Any]) -> BaseGeometry:
+        """Create shape from parameters."""
+        try:
+            # Extract basic parameters
+            shape_type = params.get('shape_type', 'generic')
+            scale = params.get('scale_factor', 1.0)
+            detail_level = params.get('detail_level', 0.5)
+            
+            if shape_type == 'flower':
+                return self._create_flower(
+                    num_petals=params.get('num_petals', 5),
+                    petal_length=0.5 * scale,
+                    petal_width=0.2 * scale,
+                    detail_level=detail_level
+                )
+            elif shape_type == 'leaf':
+                return self._create_leaf(
+                    length=1.0 * scale,
+                    width=0.5 * scale,
+                    detail_level=detail_level
+                )
+            else:
+                return self._create_generic_organic(
+                    scale=scale,
+                    detail_level=detail_level
+                )
+                
+        except Exception as e:
+            logger.error(f"Error creating organic shape: {str(e)}")
+            # Return a simple fallback shape
+            return self._create_generic_organic(scale=1.0, detail_level=0.3)
     
-    @staticmethod
-    def create_flower(
-        num_petals: int,
-        petal_length: float,
-        petal_width: float,
-        center_radius: float = 0.2,
-        petal_curve_factor: float = 0.3
-    ) -> List[OrganicSurface]:
-        """Create a flower with multiple petals."""
-        # Create center disk
-        center_points = []
-        for r in np.linspace(0, center_radius, 5):
-            circle_points = []
-            for theta in np.linspace(0, 2*np.pi, 20):
-                x = r * np.cos(theta)
-                y = r * np.sin(theta)
-                z = 0.1 * (1 - r/center_radius)  # Slight dome shape
-                circle_points.append(Point(x, y, z))
-            center_points.append(circle_points)
+    def _create_flower(self, num_petals: int, petal_length: float,
+                      petal_width: float, detail_level: float) -> OrganicSurface:
+        """Create a flower shape."""
+        # Create center
+        center_radius = petal_length * 0.2
+        center = self._create_center(radius=center_radius, detail_level=detail_level)
         
-        center_surface = NURBSSurface.from_points(center_points)
-        center = OrganicSurface([center_surface])
-        
-        # Create and arrange petals
+        # Create petals
         petals = []
         for i in range(num_petals):
-            angle = 2 * np.pi * i / num_petals
-            # Add variation to petal parameters
-            length_var = petal_length * (1 + 0.1 * np.sin(3*angle))
-            width_var = petal_width * (1 + 0.1 * np.cos(2*angle))
-            
-            petal = OrganicShapeFactory.create_petal(
-                length_var,
-                width_var,
-                petal_curve_factor,
-                twist_angle=0.2 * np.sin(angle)
+            angle = (2 * np.pi * i) / num_petals
+            petal = self._create_petal(
+                length=petal_length,
+                width=petal_width,
+                angle=angle,
+                detail_level=detail_level
             )
-            
-            # Create transformation matrix
-            c, s = np.cos(angle), np.sin(angle)
-            transform = np.array([
-                [c, -s, 0, center_radius * c],
-                [s, c, 0, center_radius * s],
-                [0, 0, 1, 0],
-                [0, 0, 0, 1]
-            ])
-            
-            petals.append(petal.transform(transform))
+            petals.append(petal)
         
-        return [center] + petals
+        # Combine shapes
+        return OrganicSurface.combine([center] + petals)
     
-    @staticmethod
-    def create_leaf(
-        length: float,
-        width: float,
-        curve_factor: float = 0.3,
-        vein_depth: float = 0.05
-    ) -> OrganicSurface:
-        """Create a leaf shape with veins."""
-        # Create base leaf curve
-        leaf = FlowerPetal(length, width, curve_factor, harmonics=2)
-        curve = leaf.to_nurbs()
-        
-        # Create surface with vein pattern
-        control_points = []
-        for t in np.linspace(0, 1, 10):
-            points = curve.sample_points(20)
-            # Add vein pattern
-            vein = vein_depth * np.sin(5 * np.pi * t) * np.exp(-2*t)
-            offset = np.array([0, 0, vein])
-            control_points.append([Point(p.x, p.y, p.z + offset[2]) for p in points])
-        
+    def _create_leaf(self, length: float, width: float,
+                    detail_level: float) -> OrganicSurface:
+        """Create a leaf shape."""
+        # Create main surface
+        control_points = self._generate_leaf_points(length, width)
         surface = NURBSSurface.from_points(control_points)
-        return OrganicSurface([surface])
+        
+        # Add veins
+        veins = self._create_leaf_veins(length, width, detail_level)
+        
+        # Combine and add organic deformation
+        combined = OrganicSurface.from_nurbs(surface)
+        for vein in veins:
+            combined.add_feature(vein)
+        
+        return combined
     
-    @staticmethod
-    def create_tree(
-        trunk_height: float = 2.0,
-        trunk_radius: float = 0.2,
-        num_branches: int = 5,
-        leaf_size: float = 0.5
-    ) -> List[OrganicSurface]:
-        """Create a simple tree with trunk and leaves."""
-        # Create trunk
-        trunk_points = []
-        for h in np.linspace(0, trunk_height, 10):
-            circle_points = []
-            radius = trunk_radius * (1 - 0.3 * h/trunk_height)  # Taper trunk
-            for theta in np.linspace(0, 2*np.pi, 20):
-                x = radius * np.cos(theta)
-                y = radius * np.sin(theta)
-                circle_points.append(Point(x, y, h))
-            trunk_points.append(circle_points)
+    def _create_generic_organic(self, scale: float,
+                              detail_level: float) -> OrganicSurface:
+        """Create a generic organic shape."""
+        # Create base sphere
+        radius = 0.5 * scale
+        sphere = self._create_sphere(radius)
         
-        trunk_surface = NURBSSurface.from_points(trunk_points)
-        trunk = OrganicSurface([trunk_surface])
+        # Add organic deformation
+        surface = OrganicSurface.from_nurbs(sphere)
+        surface.add_random_deformation(intensity=detail_level)
         
-        # Add branches with leaves
-        branches = []
-        for i in range(num_branches):
-            height = trunk_height * (0.3 + 0.7 * i/num_branches)
-            angle = 2 * np.pi * i / num_branches
-            
-            leaf = OrganicShapeFactory.create_leaf(
-                leaf_size,
-                leaf_size * 0.4,
-                curve_factor=0.2
-            )
-            
-            # Position leaf
-            c, s = np.cos(angle), np.sin(angle)
-            transform = np.array([
-                [c, -s, 0, trunk_radius * 2 * c],
-                [s, c, 0, trunk_radius * 2 * s],
-                [0, 0, 1, height],
-                [0, 0, 0, 1]
-            ])
-            
-            branches.append(leaf.transform(transform))
-        
-        return [trunk] + branches
+        return surface
     
-    @staticmethod
-    def create_vine(
-        points: List[Point],
-        thickness: float,
-        n_leaves: int,
-        leaf_size: float
-    ) -> OrganicSurface:
-        """
-        Create a vine with leaves along a curve.
+    def _create_center(self, radius: float, detail_level: float) -> OrganicSurface:
+        """Create flower center."""
+        # Create base sphere
+        sphere = self._create_sphere(radius)
         
-        Args:
-            points: Control points for vine curve
-            thickness: Thickness of vine
-            n_leaves: Number of leaves
-            leaf_size: Size of leaves
-        """
-        surfaces = []
+        # Add organic texture
+        surface = OrganicSurface.from_nurbs(sphere)
+        surface.add_bumps(
+            count=int(20 * detail_level),
+            height=radius * 0.1,
+            radius=radius * 0.1
+        )
         
-        # Create vine curve
-        vine_curve = NURBSCurve(points)
+        return surface
+    
+    def _create_petal(self, length: float, width: float,
+                     angle: float, detail_level: float) -> OrganicSurface:
+        """Create a single petal."""
+        # Create base curve
+        control_points = [
+            [0, 0, 0],
+            [length * 0.3, width * 0.5, 0],
+            [length * 0.7, width * 0.5, 0],
+            [length, 0, 0]
+        ]
+        curve = NURBSCurve.from_points(control_points)
         
-        # Create vine surface
-        n_points_u = len(points)
-        n_points_v = 8
-        vine_points = []
+        # Create surface by sweeping
+        surface = curve.sweep(width)
         
-        for i in range(n_points_u):
-            u = i / (n_points_u - 1)
+        # Add organic deformation
+        organic = OrganicSurface.from_nurbs(surface)
+        organic.add_random_deformation(intensity=detail_level * 0.3)
+        
+        # Rotate to position
+        organic.rotate(angle)
+        
+        return organic
+    
+    def _create_sphere(self, radius: float) -> NURBSSurface:
+        """Create a NURBS sphere."""
+        # Create control points for sphere
+        u_count, v_count = 10, 10
+        control_points = []
+        
+        for i in range(u_count):
+            u = (i / (u_count - 1)) * 2 * np.pi
             row = []
-            for j in range(n_points_v):
-                v = j / (n_points_v - 1)
-                theta = 2 * np.pi * v
-                
-                # Get point on curve
-                p = vine_curve.evaluate(u)
-                
-                # Create circle around curve point
-                r = thickness
-                x = p.x + r * np.cos(theta)
-                y = p.y + r * np.sin(theta)
-                z = p.z
-                
-                row.append(Point(x, y, z))
-            vine_points.append(row)
+            for j in range(v_count):
+                v = (j / (v_count - 1)) * np.pi
+                x = radius * np.sin(v) * np.cos(u)
+                y = radius * np.sin(v) * np.sin(u)
+                z = radius * np.cos(v)
+                row.append([x, y, z])
+            control_points.append(row)
         
-        surfaces.append(NURBSSurface(vine_points))
+        return NURBSSurface.from_points(control_points)
+    
+    def _generate_leaf_points(self, length: float,
+                            width: float) -> List[List[List[float]]]:
+        """Generate control points for a leaf shape."""
+        # Create control point grid
+        u_count, v_count = 5, 3
+        control_points = []
         
-        # Add leaves along vine
-        for i in range(n_leaves):
-            u = i / (n_leaves - 1)
-            p = vine_curve.evaluate(u)
-            
-            leaf = OrganicShapeFactory.create_leaf(
-                leaf_size,
-                leaf_size * 0.4,
-                curve_factor=0.2
-            )
-            
-            # Create transformation to position leaf
-            # This would need proper orientation based on curve tangent
-            transform = np.array([
-                [1,     0,     0,  p.x],
-                [0,     1,     0,  p.y],
-                [0,     0,     1,  p.z],
-                [0,     0,     0,  1]
-            ])
-            
-            transformed_leaf = leaf.transform(transform)
-            surfaces.extend(transformed_leaf.control_surfaces)
+        for i in range(u_count):
+            u = i / (u_count - 1)
+            row = []
+            for j in range(v_count):
+                v = j / (v_count - 1) - 0.5
+                
+                # Create leaf shape
+                x = length * u
+                y = width * v * (1 - u) * (1 - u)
+                z = 0.0
+                
+                row.append([x, y, z])
+            control_points.append(row)
         
-        return OrganicSurface(surfaces) 
+        return control_points
+    
+    def _create_leaf_veins(self, length: float, width: float,
+                          detail_level: float) -> List[NURBSCurve]:
+        """Create leaf vein curves."""
+        veins = []
+        
+        # Main vein
+        main_vein = NURBSCurve.from_points([
+            [0, 0, 0],
+            [length * 0.3, 0, 0],
+            [length * 0.7, 0, 0],
+            [length, 0, 0]
+        ])
+        veins.append(main_vein)
+        
+        # Side veins
+        num_side_veins = int(5 * detail_level)
+        for i in range(num_side_veins):
+            t = (i + 1) / (num_side_veins + 1)
+            start = main_vein.point_at(t)
+            
+            # Create side vein on both sides
+            for side in [-1, 1]:
+                end = [
+                    start[0] + length * 0.2,
+                    side * width * 0.4 * (1 - t),
+                    0
+                ]
+                vein = NURBSCurve.from_points([start, end])
+                veins.append(vein)
+        
+        return veins 

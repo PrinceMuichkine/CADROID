@@ -143,3 +143,96 @@ class check_memory_leak_context(ContextDecorator):
         else:
                 print("no added tensors")
         return False
+
+"""
+Decorator utilities for enhanced geometry system.
+"""
+
+import functools
+import time
+from typing import Any, Callable, TypeVar, cast
+from .logger import setup_logger
+
+logger = setup_logger(__name__)
+
+F = TypeVar('F', bound=Callable[..., Any])
+
+def log_execution(func: F) -> F:
+    """Log function execution time and parameters."""
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        start_time = time.time()
+        try:
+            result = func(*args, **kwargs)
+            execution_time = time.time() - start_time
+            logger.info(f"{func.__name__} executed in {execution_time:.3f} seconds")
+            return result
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {str(e)}")
+            raise
+    return cast(F, wrapper)
+
+def validate_parameters(func: F) -> F:
+    """Validate function parameters."""
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Get function parameter names
+        params = func.__code__.co_varnames[:func.__code__.co_argcount]
+        
+        # Check for None values
+        for name, value in zip(params, args):
+            if value is None:
+                logger.warning(f"Parameter {name} is None in {func.__name__}")
+        
+        for name, value in kwargs.items():
+            if value is None:
+                logger.warning(f"Parameter {name} is None in {func.__name__}")
+        
+        return func(*args, **kwargs)
+    return cast(F, wrapper)
+
+def cache_result(func: F) -> F:
+    """Cache function results."""
+    cache: dict = {}
+    
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Create cache key from arguments
+        key = str(args) + str(sorted(kwargs.items()))
+        
+        if key not in cache:
+            cache[key] = func(*args, **kwargs)
+            logger.debug(f"Cached result for {func.__name__}")
+        else:
+            logger.debug(f"Using cached result for {func.__name__}")
+        
+        return cache[key]
+    return cast(F, wrapper)
+
+def retry_on_error(max_attempts: int = 3, delay: float = 1.0) -> Callable[[F], F]:
+    """Retry function on error."""
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            attempts = 0
+            while attempts < max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    attempts += 1
+                    if attempts == max_attempts:
+                        logger.error(f"Max retry attempts ({max_attempts}) reached for {func.__name__}")
+                        raise
+                    logger.warning(f"Attempt {attempts} failed for {func.__name__}: {str(e)}")
+                    time.sleep(delay)
+            return None  # Should never reach here
+        return cast(F, wrapper)
+    return decorator
+
+def deprecated(func: F) -> F:
+    """Mark function as deprecated."""
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        logger.warning(f"Function {func.__name__} is deprecated")
+        return func(*args, **kwargs)
+    return cast(F, wrapper)

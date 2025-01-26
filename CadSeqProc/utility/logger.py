@@ -1,12 +1,20 @@
+"""
+Logging utility for enhanced geometry system.
+"""
+
 from loguru import logger
 import sys
 import logging
+from typing import Any, Union, Optional
 
 class CLGLogger:
-    def __init__(self):
+    """Logger class with enhanced configuration options."""
+    
+    def __init__(self) -> None:
         self.logger = logger.bind(class_name=self.__class__.__name__)
 
-    def configure_logger(self, verbose=True):
+    def configure_logger(self, verbose: bool = True) -> 'CLGLogger':
+        """Configure logger with specified verbosity level."""
         logger.remove()
         
         if verbose:
@@ -25,7 +33,8 @@ class CLGLogger:
 
         return self
     
-    def add_log_file(self, file_path):
+    def add_log_file(self, file_path: str) -> 'CLGLogger':
+        """Add a file handler to the logger."""
         # Add a log file handler
         logger.add(
             file_path,
@@ -36,7 +45,8 @@ class CLGLogger:
 
         return self
     
-    def add_log_rotation(self, rotation_size, backup_count):
+    def add_log_rotation(self, rotation_size: Union[str, int], backup_count: int) -> 'CLGLogger':
+        """Configure log rotation settings."""
         # Set log rotation size and backup count
         logger.configure(
             handlers=[{"sink": sys.stderr, "level": "TRACE", "diagnose": True},
@@ -50,7 +60,8 @@ class CLGLogger:
 
         return self
 
-    def add_log_level(self, level):
+    def add_log_level(self, level: Union[str, int]) -> 'CLGLogger':
+        """Set the logging level."""
         # Set the log level
         logger.level(level)
 
