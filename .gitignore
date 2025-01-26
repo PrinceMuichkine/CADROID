@@ -5,8 +5,13 @@
 ## Source-files
 # Byte-compiled / optimized / DLL files
 __pycache__/
+App/cache/
+Cad_VLM/cache/
+App/output/
+Cad_VLM/checkpoints/
 *.py[cod]
 *$py.class
+logs
 
 # C extensions
 *.so

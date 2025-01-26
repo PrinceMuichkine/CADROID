@@ -3,6 +3,7 @@ import torch.nn as nn
 import copy
 import os
 import re
+import torch
 
 
 def text_prompt(file_path):
@@ -71,3 +72,21 @@ def print_with_separator(text):
     print("\033[94m" + separator)
     print("#" + " " * left_padding + text + " " * right_padding + "#")
     print(separator + "\033[0m")
+
+
+def get_device():
+    """Get the appropriate device (MPS for Mac M-series, CUDA for NVIDIA, CPU otherwise)"""
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def get_device_str():
+    """Get the device string (mps, cuda, or cpu)"""
+    if torch.backends.mps.is_available():
+        return "mps"
+    elif torch.cuda.is_available():
+        return "cuda"
+    return "cpu"

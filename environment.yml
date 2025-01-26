@@ -1,4 +1,4 @@
-name: text2cad
+name: cadroid
 channels:
     - conda-forge
     - pytorch

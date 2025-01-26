@@ -14,7 +14,7 @@ from CadSeqProc.utility.utils import (
 from Cad_VLM.models.layers.embedder import CADSequenceEmbedder, PositionalEncodingSinCos
 from Cad_VLM.models.layers.attention import CrossAttention, MultiHeadAttention
 from Cad_VLM.models.layers.functional import FeedForwardLayer
-from Cad_VLM.models.utils import count_parameters
+from Cad_VLM.models.utils import count_parameters, get_device, get_device_str
 from rich import print
 from typing import Optional
 
@@ -151,6 +151,7 @@ class CADDecoder(nn.Module):
     @staticmethod
     def from_config(config):
         """Initialize the CADDecoder class from a config file"""
+        device = get_device()
         cad_decoder = CADDecoder(
             cad_class_info=CAD_CLASS_INFO,
             tdim=config["tdim"],
@@ -159,7 +160,7 @@ class CADDecoder(nn.Module):
             num_heads=config["num_heads"],
             dropout=config["dropout"],
             ca_level_start=config["ca_level_start"],
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            device=device,
         )
         return cad_decoder
 
@@ -184,6 +185,7 @@ class CADDecoder(nn.Module):
         """
         self.eval()
         num_texts = ZE.shape[0]
+        device = get_device()  # Use our device function
         new_cad_seq_dict={
             "cad_vec": torch.tensor([[[1, 0]]]).repeat(num_texts, 1, 1).to(device),
             "flag_vec": torch.zeros(num_texts, 1).int().to(device),
