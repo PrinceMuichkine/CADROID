@@ -1,0 +1,11 @@
+# Folders
+/code
+/prompts
+
+# Source-files
+.mypy_cache
+
+# Environments
+.env
+
+# Specifics 
