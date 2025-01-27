@@ -3,9 +3,13 @@
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import json
-import numpy as np  # type: ignore
+import numpy as np
 from ..enhanced_geometry.base import GeometricEntity, Point
 from ..enhanced_geometry.pattern_recognition import DesignPattern
+from ..utility.logger import CLGLogger
+
+# Initialize logger
+logger = CLGLogger(__name__).configure_logger()
 
 @dataclass
 class ManufacturingConstraint:
@@ -145,28 +149,74 @@ class ManufacturingAnalyzer:
             )
         }
 
-    def analyze_manufacturability(self, geometry: GeometricEntity, 
-                                process_name: str) -> Dict[str, Any]:
-        """Analyze manufacturability of a design for a specific process."""
-        process = self.processes[process_name]
-        
-        # Analyze basic geometric constraints
-        constraint_violations = self._check_constraints(geometry, process)
-        
-        # Analyze cost factors
-        cost_analysis = self._analyze_cost(geometry, process)
-        
-        # Generate manufacturing recommendations
-        recommendations = self._generate_recommendations(
-            geometry, process, constraint_violations)
-        
-        return {
-            "process": process.name,
-            "manufacturability_score": self._calculate_score(constraint_violations),
-            "constraint_violations": constraint_violations,
-            "cost_analysis": cost_analysis,
-            "recommendations": recommendations
-        }
+    async def analyze_manufacturability(self, geometry: GeometricEntity, process_name: str) -> Dict[str, Any]:
+        """Analyze manufacturability of a geometry for a given process."""
+        try:
+            # Get process configuration
+            process = self.processes.get(process_name)
+            if not process:
+                return {
+                    "status": "error",
+                    "message": f"Unsupported manufacturing process: {process_name}"
+                }
+            
+            # Check constraints
+            violations = self._check_constraints(geometry, process)
+            
+            # Calculate manufacturing metrics
+            volume = self._calculate_volume(geometry)
+            surface_area = self._calculate_surface_area(geometry)
+            manufacturing_time = self._estimate_manufacturing_time(
+                geometry, process, volume, surface_area
+            )
+            
+            # Calculate cost analysis
+            cost_analysis = self._analyze_cost(geometry, process)
+            
+            # Generate recommendations using LLM
+            if self.llm_client:
+                recommendations = await self.llm_client.generate_recommendations({
+                    "geometry": {
+                        "volume": volume,
+                        "surface_area": surface_area,
+                        "violations": violations
+                    },
+                    "process": {
+                        "name": process.name,
+                        "type": process.type,
+                        "constraints": [
+                            {
+                                "type": c.constraint_type,
+                                "value": c.value,
+                                "unit": c.unit
+                            } for c in process.constraints
+                        ]
+                    }
+                })
+            else:
+                recommendations = self._generate_recommendations(geometry, process, violations)
+            
+            # Calculate overall manufacturability score
+            score = self._calculate_score(violations)
+            
+            return {
+                "status": "success",
+                "score": score,
+                "violations": violations,
+                "recommendations": recommendations,
+                "metrics": {
+                    "volume": volume,
+                    "surface_area": surface_area,
+                    "manufacturing_time": manufacturing_time
+                },
+                "cost_analysis": cost_analysis
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": str(e)
+            }
 
     def _check_constraints(self, geometry: GeometricEntity, 
                          process: ManufacturingProcess) -> List[Dict[str, Any]]:

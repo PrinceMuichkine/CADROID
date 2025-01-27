@@ -37,6 +37,20 @@ class LLMClient:
         
         self.conversation_history: List[Dict[str, str]] = []
     
+    async def analyze_text(self, text: str) -> Dict[str, Any]:
+        """Analyze text input for CAD generation.
+        
+        This is a wrapper around analyze_request that provides a simpler interface
+        for basic text analysis without full conversation context.
+        
+        Args:
+            text: The text to analyze
+            
+        Returns:
+            Dict containing the analysis results
+        """
+        return await self.analyze_request(text)
+    
     async def analyze_request(self, text: str) -> Dict[str, Any]:
         """Analyze a design request using Claude 3.5."""
         try:
@@ -100,96 +114,116 @@ class LLMClient:
                     self._call_api(prompt),
                     timeout=self.timeout
                 )
-                
-                if not self.validate_response(response):
-                    self.logger.warning("Invalid response format")
-                    return {"status": "error", "message": "Invalid response format"}
-                
-                return {
-                    "status": "success",
-                    "parameters": response
-                }
-                
+                return response
             except asyncio.TimeoutError:
                 self.logger.error(f"API call timed out after {self.timeout} seconds")
-                return {
-                    "status": "error",
-                    "message": f"Request timed out after {self.timeout} seconds"
-                }
+                return {"error": "Request timed out"}
             
         except Exception as e:
             self.logger.error(f"Error analyzing request: {str(e)}")
-            return {
-                "status": "error",
-                "message": str(e)
-            }
+            return {"error": str(e)}
+    
+    async def generate_recommendations(self, geometry: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate manufacturing recommendations for a given geometry.
+        
+        Args:
+            geometry: Dictionary containing geometry information
+            
+        Returns:
+            Dict containing manufacturing recommendations
+        """
+        try:
+            prompt = f"""
+            Analyze the following CAD geometry and provide manufacturing recommendations.
+            Return the analysis in JSON format with EXACTLY this structure:
+            {{
+                "best_process": "3D printing",
+                "material_suggestions": [
+                    {{"material": "PLA", "score": 0.9}},
+                    {{"material": "PETG", "score": 0.8}}
+                ],
+                "considerations": [
+                    "Support structures needed",
+                    "Layer adhesion critical"
+                ],
+                "constraints": [
+                    {{"type": "min_wall_thickness", "value": 0.8, "unit": "mm"}},
+                    {{"type": "max_overhang", "value": 45, "unit": "degrees"}}
+                ]
+            }}
+            
+            Geometry:
+            {json.dumps(geometry, indent=2)}
+            
+            Ensure your response is valid JSON and contains ALL the required fields.
+            Do not include any explanatory text, just return the JSON object.
+            """
+            
+            response = await asyncio.wait_for(
+                self._call_api(prompt),
+                timeout=self.timeout
+            )
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error generating recommendations: {str(e)}")
+            return {"error": str(e)}
     
     def validate_response(self, response: Dict[str, Any]) -> bool:
-        """Validate the response format."""
-        required_fields = ['dimensions', 'manufacturing', 'features']
+        """Validate that a response contains all required fields."""
+        required_fields = ["dimensions", "manufacturing", "features"]
         return all(field in response for field in required_fields)
     
     def _build_context(self) -> str:
-        """Build context from conversation history."""
-        if not self.conversation_history:
-            return ""
-        
-        context = []
-        for entry in self.conversation_history[-5:]:  # Only use last 5 entries
-            role = entry['role']
-            content = entry['content']
-            context.append(f"{role.capitalize()}: {content}")
-        
-        return "\n".join(context)
+        """Build context string from conversation history."""
+        context = ""
+        for message in self.conversation_history:
+            role = message["role"].capitalize()
+            content = message["content"]
+            context += f"{role}: {content}\n"
+        return context
     
     async def _call_api(self, prompt: str) -> Dict[str, Any]:
-        """Make an async API call to Claude."""
+        """Call the Claude API with the given prompt."""
         try:
             if not self.api_key:
                 self.logger.warning("No API key available, using mock response")
                 return self._get_mock_response()
             
-            # Create a new event loop for the thread
-            loop = asyncio.get_event_loop()
-            
-            # Make the API call in a non-blocking way
-            message = await loop.run_in_executor(
-                None,
-                lambda: self.client.messages.create(
-                    model="claude-3-sonnet-20240229",
-                    max_tokens=4096,
-                    temperature=0.7,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                )
+            # Create message synchronously since Anthropic's client is not async
+            message = self.client.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=4096,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
             )
             
-            # Parse the response content
-            content = message.content[0].text
-            
-            # Remove any explanatory text before the JSON
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                content = content[json_start:json_end]
-            
+            # Extract JSON from response
             try:
-                return json.loads(content)
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse JSON response: {str(e)}")
-                self.logger.debug(f"Raw content: {content}")
-                return self._get_mock_response()
+                response_text = message.content[0].text
+                # Find JSON in the response
+                json_start = response_text.find('{')
+                json_end = response_text.rfind('}') + 1
+                if json_start >= 0 and json_end > json_start:
+                    json_str = response_text[json_start:json_end]
+                    return json.loads(json_str)
+                else:
+                    self.logger.error("No JSON found in response")
+                    return {"error": "No JSON found in response"}
+            except (json.JSONDecodeError, IndexError) as e:
+                self.logger.error(f"Error parsing API response: {str(e)}")
+                return {"error": "Invalid response format"}
             
         except Exception as e:
             self.logger.error(f"API call failed: {str(e)}")
-            return self._get_mock_response()
+            return {"error": str(e)}
     
     def _get_mock_response(self) -> Dict[str, Any]:
-        """Get a mock response for testing."""
+        """Get a mock response for testing without API access."""
         return {
             "dimensions": {
                 "width": 10,

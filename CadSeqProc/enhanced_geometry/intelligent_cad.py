@@ -219,11 +219,22 @@ class IntelligentCAD:
             # Get LLM analysis
             llm_response = await self.llm_client.analyze_request(text)
             
-            if llm_response["status"] != "success":
-                return llm_response
+            # Check for errors in LLM response
+            if "error" in llm_response:
+                return {
+                    "status": "error",
+                    "message": llm_response["error"]
+                }
+            
+            # Validate response format
+            if not self.llm_client.validate_response(llm_response):
+                return {
+                    "status": "error",
+                    "message": "Invalid response format from LLM"
+                }
             
             # Generate geometry
-            geometry = self.shape_factory.create_from_params(llm_response["parameters"])
+            geometry = self.shape_factory.create_from_params(llm_response)
             
             # Apply patterns from context
             geometry = await self._apply_patterns(geometry)
@@ -239,7 +250,7 @@ class IntelligentCAD:
             return {
                 "status": "success",
                 "geometry": geometry,
-                "parameters": llm_response["parameters"],
+                "parameters": llm_response,
                 "validation": validation_result
             }
             

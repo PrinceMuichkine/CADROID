@@ -192,13 +192,13 @@ class CADPipeline:
         """Analyze geometry for patterns."""
         return self.pattern_recognizer.analyze_geometry(geometry)
 
-    def _analyze_manufacturing(self, geometry: GeometricEntity,
+    async def _analyze_manufacturing(self, geometry: GeometricEntity,
                              patterns: List[DesignPattern]) -> Dict[str, Any]:
         """Perform manufacturing analysis."""
         # Analyze for different manufacturing processes
         analyses = {}
         for process in ["3d_printing_fdm", "cnc_milling"]:
-            analyses[process] = self.manufacturing_analyzer.analyze_manufacturability(
+            analyses[process] = await self.manufacturing_analyzer.analyze_manufacturability(
                 geometry, process)
             
         # Get material suggestions
