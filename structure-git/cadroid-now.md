@@ -3,6 +3,7 @@ Directory structure:
     ├── README.md
     ├── LICENSE
     ├── environment.yml
+    ├── py.typed
     ├── .env.sample
     ├── App/
     │   └── app.py
@@ -11,9 +12,11 @@ Directory structure:
     │   ├── cad_sequence.py
     │   ├── eda.py
     │   ├── integration.py
+    │   ├── intelligent_cad.py
     │   ├── json2step.py
     │   ├── json2stl_skt3d.py
     │   ├── json2vec.py
+    │   ├── llm_client.py
     │   ├── merge_vlm_minimal.py
     │   ├── minimal_cad_json.py
     │   ├── split_json.py
@@ -44,7 +47,10 @@ Directory structure:
     │   │   ├── nurbs.py
     │   │   ├── organic.py
     │   │   ├── parametric.py
+    │   │   ├── pattern_recognition.py
     │   │   └── tests.py
+    │   ├── examples/
+    │   │   └── pattern_recognition_demo.py
     │   ├── geometry/
     │   │   ├── arc.py
     │   │   ├── circle.py
@@ -61,6 +67,8 @@ Directory structure:
     │   │   └── transformation/
     │   │       ├── deform.py
     │   │       └── extrude_sequence.py
+    │   ├── tests/
+    │   │   └── test_pattern_recognition.py
     │   └── utility/
     │       ├── decorator.py
     │       ├── factory.py
@@ -94,5 +102,9 @@ Directory structure:
     │           ├── layer_utils.py
     │           ├── text_embed.py
     │           └── utils_decode.py
-    └── Evaluation/
-        └── eval_seq.py
+    ├── Evaluation/
+    │   └── eval_seq.py
+    └── structure-git/
+        ├── cad3dify.md
+        ├── cadroid-now.md
+        └── text-to-cad.md
