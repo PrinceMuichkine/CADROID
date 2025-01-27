@@ -2,6 +2,8 @@ import torch
 import copy
 import torch.nn as nn
 import os, sys
+from typing import Dict, Any, Optional, List, Union, Tuple
+from torch import Tensor
 
 sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-3]))
 from CadSeqProc.utility.macro import *
@@ -16,7 +18,6 @@ from Cad_VLM.models.layers.attention import CrossAttention, MultiHeadAttention
 from Cad_VLM.models.layers.functional import FeedForwardLayer
 from Cad_VLM.models.utils import count_parameters, get_device, get_device_str
 from rich import print
-from typing import Optional
 
 
 class CADDecoder(nn.Module):
@@ -48,7 +49,7 @@ class CADDecoder(nn.Module):
 
     def __init__(
         self,
-        cad_class_info: dict,
+        cad_class_info: Dict[str, int],
         tdim: int,
         cdim: int,
         num_layers: int,
@@ -56,10 +57,11 @@ class CADDecoder(nn.Module):
         dropout: float,
         ca_level_start: int,
         device: str,
-    ):
-        super(CADDecoder, self).__init__()
+    ) -> None:
+        super().__init__()
 
         self.num_layers = num_layers
+        self.attention_scores: Dict[str, Dict[str, Tensor]] = {}
 
         # For Initial Sequence Embedding
         self.seq_embed = CADSequenceEmbedder(
@@ -104,24 +106,15 @@ class CADDecoder(nn.Module):
             nn.Linear(in_features=cdim, out_features=cad_class_info["one_hot_size"])
         )
 
-        # Metadata
-        self.attention_scores = dict()
-
     def forward(
         self,
-        vec_dict: dict,
-        ZE: Optional[torch.tensor],
-        mask_cad_dict: dict,
-        cross_attn_mask_dict: dict = {"attn_mask": None, "key_padding_mask": None},
+        vec_dict: Dict[str, Tensor],
+        ZE: Optional[Tensor],
+        mask_cad_dict: Dict[str, Tensor],
+        cross_attn_mask_dict: Dict[str, Optional[Tensor]] = {"attn_mask": None, "key_padding_mask": None},
         metadata: bool = False,
-    ):
-        """
-        vec_dict: dictionary with keys "cad_vec", "flag_vec", "index_vec"
-        ZE: tensor of shape (batch, num_code, emd_dim). Context
-        mask_cad_dict: dictionary with keys "key_padding_mask" and "attn_mask". SELF ATTENTION MASK
-        cross_attn_mask_dict: dictionary with keys "attn_mask" and "key_padding_mask". CROSS ATTENTION MASK
-        metadata: boolean indicating whether attention weights are saved. Turn off during training
-        """
+    ) -> Tuple[Tensor, Optional[Dict[str, Any]]]:
+        """Forward pass of the decoder."""
         num_seq = vec_dict["cad_vec"].shape[1]
         # Token Embedding and positional encoding
         S = self.pe(num_seq) + self.seq_embed(
@@ -139,12 +132,12 @@ class CADDecoder(nn.Module):
         Sx = self.seq_output_x(S).unsqueeze(dim=2)  # (B,1,N1,one_hot_size)
         Sy = self.seq_output_y(S).unsqueeze(dim=2)  # (B,N1,1,one_hot_size)
 
-        S = torch.cat([Sx, Sy], dim=2)  # (B,N1,2*one_hot_size
+        S = torch.cat([Sx, Sy], dim=2)  # (B,N1,2*one_hot_size)
 
         # Save the metadata
         if metadata:
-            self.metadata = {"attention_scores": self.attention_scores}
-            return S, self.metadata
+            metadata_dict = {"attention_scores": self.attention_scores}
+            return S, metadata_dict
         else:
             return S, None
 

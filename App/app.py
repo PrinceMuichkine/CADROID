@@ -1,222 +1,250 @@
-import os, sys
-import dotenv
+"""FastAPI server for CAD operations."""
+
+import os
+import sys
+from pathlib import Path
+from typing import Optional, Dict, Any, Union, List, TypedDict
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Add project root to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from CadSeqProc.pipeline import CADPipeline, PipelineConfig
+from CadSeqProc.enhanced_geometry.intelligent_cad import IntelligentCAD
+from CadSeqProc.enhanced_geometry.llm_client import LLMClient
 
 # Load environment variables
-dotenv.load_dotenv()
+load_dotenv()
 
-sys.path.append("..")
-sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-1]))
-sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-2]))
-from Cad_VLM.models.text2cad import Text2CAD
-from CadSeqProc.utility.macro import MAX_CAD_SEQUENCE_LENGTH, N_BIT
-from CadSeqProc.cad_sequence import CADSequence
-from Cad_VLM.models.utils import get_device, get_device_str
-from CadSeqProc.enhanced_geometry.intelligent_cad import IntelligentCAD, ConversationalCAD
-from CadSeqProc.enhanced_geometry.llm_client import LLMClient, LLMConfig
-import gradio as gr
-import yaml
-import torch
-
-# Global state for conversation
-conversation_state = None
-
-def initialize_conversation():
-    global conversation_state
-    if conversation_state is None:
-        # Get API key from environment
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-            
-        llm_config = LLMConfig(
-            api_key=api_key,
-            model="claude-3-sonnet-20240229",
-            temperature=0.7,  # Lower for more precise CAD descriptions
-            max_tokens=4096
-        )
-        llm_client = LLMClient(llm_config)
-        intelligent_cad = IntelligentCAD(llm_client)
-        conversation_state = ConversationalCAD(llm_client, intelligent_cad)
-
-def load_model(config, device):
-    try:
-        # -------------------------------- Load Model -------------------------------- #
-        cad_config = config["cad_decoder"]
-        cad_config["cad_seq_len"] = MAX_CAD_SEQUENCE_LENGTH
-        text2cad = Text2CAD(text_config=config["text_encoder"], cad_config=cad_config).to(
-            device
-        )
-
-        if config["test"]["checkpoint_path"] is not None:
-            checkpoint_file = config["test"]["checkpoint_path"]
-            
-            if not os.path.exists(checkpoint_file):
-                raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
-                
-            # Load checkpoint with device-agnostic code
-            checkpoint = torch.load(checkpoint_file, map_location=device)
-            pretrained_dict = {}
-            for key, value in checkpoint["model_state_dict"].items():
-                if key.split(".")[0] == "module":
-                    pretrained_dict[".".join(key.split(".")[1:])] = value
-                else:
-                    pretrained_dict[key] = value
-
-            text2cad.load_state_dict(pretrained_dict, strict=False)
-        text2cad.eval()
-        return text2cad
-    except Exception as e:
-        print(f"Error loading model: {str(e)}")
-        raise
-
-def test_model(model, text, config, device):
-    if not isinstance(text, list):
-        text = [text]
-    
-    try:
-        # Move model to device if not already there
-        model = model.to(device)
-        
-        # Use device-agnostic code
-        pred_cad_seq_dict = model.test_decode(
-            texts=text,
-            maxlen=MAX_CAD_SEQUENCE_LENGTH,
-            nucleus_prob=config["test"]["nucleus_prob"],
-            topk_index=1,
-            device=device
-        )
-        
-        # Move tensors to CPU before numpy conversion
-        cad_vec = pred_cad_seq_dict["cad_vec"][0].detach().cpu().numpy()
-        
-        pred_cad = CADSequence.from_vec(
-            cad_vec,
-            bit=N_BIT,
-            post_processing=True,
-        ).create_mesh()
-
-        return pred_cad.mesh, pred_cad
-    except Exception as e:
-        print(f"Error in test_model: {str(e)}")
-        return None, None  # Return tuple to match expected unpacking
-
-def parse_config_file(config_file):
-    with open(config_file, "r") as file:
-        yaml_data = yaml.safe_load(file)
-    return yaml_data
-
-# Set up device using our utility function
-device = get_device()
-print(f"Using {get_device_str()} device")
-
-config_path = "../Cad_VLM/config/inference_user_input.yaml"
-config = parse_config_file(config_path)
-model = load_model(config, device)
-OUTPUT_DIR = "output"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-def generate_cad_model_from_text(text, chat_history):
-    global model, config, conversation_state
-    
-    # Initialize conversation if needed
-    initialize_conversation()
-    
-    # Process the request through conversational CAD
-    result = conversation_state.process_request(text)
-    
-    if result["success"]:
-        # Use the generated/modified text description
-        description = result["text"]
-        
-        # Convert to mesh using Text2CAD
-        mesh, *extra = test_model(model=model, text=description, config=config, device=device)
-        if mesh is not None:
-            output_path = os.path.join(OUTPUT_DIR, "output.stl")
-            mesh.export(output_path)
-            
-            # Update chat history with more detailed information
-            message = f"Generated CAD model from: {description}"
-            if "updates" in result:
-                # Add parameter update information
-                updates = result["updates"]
-                message += "\nUpdated parameters:"
-                for update in updates:
-                    message += f"\n- {update['name']}: {update['value']}"
-            
-            chat_history.append((text, message))
-            
-            return output_path, chat_history
-    
-    # Handle error case
-    chat_history.append((text, f"Error: {result['message']}"))
-    return None, chat_history
-
-examples = [
-    "A ring.",
-    "A rectangular prism.",
-    "A 3D star shape with 5 points.",
-    "A cylindrical object with a cylindrical hole in the center.",
-    "A rectangular metal plate with four holes along its length.",
-    "Make the holes larger",
-    "Add another hole",
-    "undo",
-    "redo"
-]
-
-title = "Text2CAD: Generating Sequential CAD Designs from Text Prompts"
-description = """
-Generate 3D CAD models from text descriptions. This demo runs on CPU/MPS for Mac compatibility.
-
-Features:
-- Create basic shapes and complex assemblies
-- Modify existing models through conversation
-- Update parameters (dimensions, features, etc.)
-- Undo/redo support
-
-Commands:
-- "undo": Revert last change
-- "redo": Reapply undone change
-- Modify parameters: "make the holes larger", "increase the width to 10mm"
-- Add features: "add another hole", "create a pattern of 5 holes"
-
-<div style="display: flex; justify-content: center; gap: 10px; align-items: center;">
-<a href="https://arxiv.org/abs/2409.17106">
-  <img src="https://img.shields.io/badge/Arxiv-3498db?style=for-the-badge&logoWidth=40&logoColor=white&labelColor=2c3e50&borderRadius=10" alt="Arxiv" />
-</a>
-<a href="https://sadilkhan.github.io/text2cad-project/">
-  <img src="https://img.shields.io/badge/Project-2ecc71?style=for-the-badge&logoWidth=40&logoColor=white&labelColor=27ae60&borderRadius=10" alt="Project" />
-</a>
-</div>
-"""
-
-def check_requirements():
-    required_paths = [
-        "../Cad_VLM/config/inference_user_input.yaml",
-        # Add path to checkpoint file here
-    ]
-    
-    for path in required_paths:
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Required file not found: {path}")
-
-check_requirements()
-
-# Create the Gradio interface with chat and history display
-demo = gr.Interface(
-    fn=generate_cad_model_from_text,
-    inputs=[
-        gr.Textbox(label="Text", placeholder="Enter a text description or modification (e.g., 'make it larger', 'undo')"),
-        gr.State([])  # For chat history
-    ],
-    outputs=[
-        gr.Model3D(clear_color=[0.678, 0.847, 0.902, 1.0], label="3D CAD Model"),
-        gr.Chatbot(label="Conversation History")  # Added chat history display
-    ],
-    examples=examples,
-    title=title,
-    description=description,
-    theme=gr.themes.Soft(),
+# Initialize FastAPI app
+app = FastAPI(
+    title="CADroid API",
+    description="API for CAD model generation and analysis",
+    version="1.0.0"
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize pipeline
+config = PipelineConfig(
+    model_type=os.getenv("DEFAULT_MODEL", "claude"),
+    debug=os.getenv("DEBUG", "false").lower() == "true",
+    cache_dir=os.getenv("CACHE_DIR", "./App/cache"),
+    output_dir=os.getenv("OUTPUT_DIR", "./App/output")
+)
+
+# Initialize CAD system
+llm_client = LLMClient(model_type=config.model_type)
+cad_system = IntelligentCAD(llm_client)
+pipeline = CADPipeline(config)
+
+# Ensure output directories exist
+os.makedirs(config.cache_dir, exist_ok=True)
+os.makedirs(config.output_dir, exist_ok=True)
+
+class AnalysisPattern(TypedDict):
+    name: str
+    description: str
+    confidence: float
+
+class MaterialSuggestion(TypedDict):
+    material: str
+    score: float
+
+class ManufacturingAnalysis(TypedDict):
+    best_process: str
+    material_suggestions: List[MaterialSuggestion]
+    analyses: Dict[str, Dict[str, Any]]
+
+class Optimization(TypedDict):
+    type: str
+    suggestion: str
+
+class PipelineResult(TypedDict):
+    success: bool
+    patterns: List[AnalysisPattern]
+    manufacturing: ManufacturingAnalysis
+    optimizations: List[Optimization]
+    error: Optional[str]
+
+class GenerateRequest(BaseModel):
+    """Request model for CAD generation."""
+    text: str
+    process_type: str = "3d_printing_fdm"
+
+class GenerateResponse(BaseModel):
+    """Response model for CAD generation."""
+    success: bool
+    model_path: Optional[str] = None
+    model_url: Optional[str] = None
+    analysis: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+class AnalyzeRequest(BaseModel):
+    """Request model for CAD analysis."""
+    model_path: str
+    process_type: str = "3d_printing_fdm"
+
+class AnalyzeResponse(BaseModel):
+    """Response model for CAD analysis."""
+    success: bool
+    analysis: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+@app.get("/")
+async def root():
+    """Root endpoint providing API information."""
+    return {
+        "name": "CADroid API",
+        "version": "1.0.0",
+        "description": "AI-powered CAD model generation and analysis",
+        "endpoints": {
+            "generate": "/generate - Generate CAD model from text description",
+            "analyze": "/analyze - Analyze existing CAD model",
+            "upload": "/upload - Upload CAD file for analysis",
+            "download": "/download/{filename} - Download generated CAD file",
+            "docs": "/docs - API documentation",
+            "redoc": "/redoc - Alternative API documentation"
+        }
+    }
+
+@app.post("/generate", response_model=GenerateResponse)
+async def generate_cad(request: GenerateRequest) -> GenerateResponse:
+    """Generate CAD model from text description."""
+    try:
+        # Process request through pipeline
+        result = await pipeline.process(request.text)
+        
+        if not result["success"]:
+            return GenerateResponse(
+                success=False,
+                error=result.get("error", "Unknown error occurred")
+            )
+        
+        # Save results
+        output_path = pipeline.save_results(result)
+        
+        # Format analysis results
+        analysis = {
+            "Patterns": [
+                f"{p['name']}: {p['description']} (Confidence: {p['confidence']:.2f})"
+                for p in result.get("patterns", [])
+            ],
+            "Manufacturing": {
+                "Best Process": result.get("manufacturing", {}).get("best_process", ""),
+                "Material Suggestions": [
+                    f"{mat['material']}: {mat['score']:.1f}"
+                    for mat in result.get("manufacturing", {}).get("material_suggestions", [])
+                ],
+                "Analysis": result.get("manufacturing", {}).get("analyses", {}).get(request.process_type, {})
+            },
+            "Optimizations": [
+                f"{opt['type']}: {opt['suggestion']}"
+                for opt in result.get("optimizations", [])
+            ]
+        }
+        
+        return GenerateResponse(
+            success=True,
+            model_path=str(output_path),
+            model_url=f"/download/{output_path.name}",
+            analysis=analysis
+        )
+        
+    except Exception as e:
+        return GenerateResponse(
+            success=False,
+            error=str(e)
+        )
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_cad(request: AnalyzeRequest) -> AnalyzeResponse:
+    """Analyze existing CAD model."""
+    try:
+        model_path = Path(request.model_path)
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+            
+        # Analyze model
+        result = pipeline.analyze_model(model_path)
+        
+        return AnalyzeResponse(
+            success=True,
+            analysis=result
+        )
+        
+    except Exception as e:
+        return AnalyzeResponse(
+            success=False,
+            error=str(e)
+        )
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
+    """Upload CAD file for analysis."""
+    try:
+        if file.filename is None:
+            raise HTTPException(status_code=400, detail="No filename provided")
+            
+        # Save uploaded file
+        file_path = Path(config.cache_dir) / file.filename
+        with open(file_path, "wb") as f:
+            contents = await file.read()
+            f.write(contents)
+            
+        return JSONResponse({
+            "success": True,
+            "file_path": str(file_path)
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        })
+
+@app.get("/download/{filename}")
+async def download_file(filename: str) -> FileResponse:
+    """Download generated CAD file."""
+    file_path = Path(config.output_dir) / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return FileResponse(
+        file_path,
+        media_type="application/octet-stream",
+        filename=filename
+    )
+
+@app.get("/health")
+async def health_check() -> Dict[str, str]:
+    """Health check endpoint."""
+    return {"status": "healthy"}
+
 if __name__ == "__main__":
-    demo.launch(share=True)
+    import uvicorn
+    
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    print(f"\nServer running at: http://{host}:{port}")
+    print(f"API documentation: http://{host}:{port}/docs")
+    print(f"Alternative docs: http://{host}:{port}/redoc\n")
+    
+    uvicorn.run(
+        "app:app",
+        host=host,
+        port=port,
+        reload=True
+    )

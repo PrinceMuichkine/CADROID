@@ -5,8 +5,8 @@ Provides support for both geometric primitives and organic shapes.
 
 from .base import Point, GeometricEntity
 from .nurbs import NURBSCurve, NURBSSurface
-from .organic import (
-    OrganicSurface,
+from .organic import OrganicSurface
+from ..sequence.transformation.deform import (
     TwistDeformation,
     BendDeformation,
     TaperDeformation

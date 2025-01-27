@@ -2,9 +2,10 @@
 
 import json
 import re
-from typing import Dict, Any, List, Optional, Union, TypedDict
+from typing import Dict, Any, List, Optional, Union, TypedDict, cast
 import anthropic
 from dataclasses import dataclass
+from anthropic.types import Message as AnthropicMessage, MessageParam, ContentBlock
 
 class Message(TypedDict):
     role: str
@@ -102,13 +103,18 @@ class LLMClient:
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
                 messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    MessageParam(
+                        role="user",
+                        content=prompt
+                    )
                 ]
             )
-            return message.content[0].text
+            if not message.content:
+                return ""
+            content_block = message.content[0]
+            if hasattr(content_block, 'text'):
+                return content_block.text
+            return ""
         except Exception as e:
             raise Exception(f"API call failed: {str(e)}")
 
@@ -166,7 +172,7 @@ class CADPromptGenerator:
         """
 
     @staticmethod
-    def manufacturing_analysis(geometry: Dict) -> str:
+    def manufacturing_analysis(geometry: Dict[str, Any]) -> str:
         """Generate prompt for manufacturing analysis."""
         return f"""
         Analyze manufacturing requirements for:
@@ -206,7 +212,7 @@ class CADPromptGenerator:
         """
 
     @staticmethod
-    def assembly_analysis(parts: List[Dict], constraints: List[Dict]) -> str:
+    def assembly_analysis(parts: List[Dict[str, Any]], constraints: List[Dict[str, Any]]) -> str:
         """Generate prompt for assembly analysis."""
         return f"""
         Analyze assembly requirements for:

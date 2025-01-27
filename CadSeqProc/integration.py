@@ -3,11 +3,31 @@ Integration module to connect enhanced geometry system with existing CAD model.
 """
 
 import numpy as np
-from typing import List, Dict, Any, Optional, Union, Tuple
+from typing import List, Dict, Any, Optional, Union, Tuple, TypedDict, cast
 from .geometry.nurbs import NURBSCurve, NURBSSurface
 from .geometry.organic import OrganicSurface
 from .utility.shape_factory import OrganicShapeFactory
 from .sequence.transformation.deform import TwistDeformation, BendDeformation, TaperDeformation
+
+class Point3D(TypedDict):
+    x: float
+    y: float
+    z: float
+
+class CurveOperation(TypedDict):
+    type: str
+    points: List[List[float]]
+    closed: bool
+
+class SurfaceOperation(TypedDict):
+    type: str
+    points: List[List[List[float]]]
+    closed_u: bool
+    closed_v: bool
+
+class CADSequence(TypedDict):
+    type: str
+    operations: List[Union[CurveOperation, SurfaceOperation]]
 
 class GeometryAdapter:
     """Adapter to convert between enhanced geometry and CAD model formats."""
@@ -15,9 +35,9 @@ class GeometryAdapter:
     @staticmethod
     def to_cad_sequence(
         entities: List[Union[NURBSCurve, NURBSSurface, OrganicSurface]]
-    ) -> Dict[str, Any]:
+    ) -> CADSequence:
         """Convert geometric entities to CAD sequence format."""
-        sequence = {
+        sequence: CADSequence = {
             'type': 'composite',
             'operations': []
         }
@@ -27,14 +47,14 @@ class GeometryAdapter:
                 points = entity.sample_points(20)
                 sequence['operations'].append({
                     'type': 'curve',
-                    'points': [[p[0], p[1], p[2]] for p in points],
+                    'points': [[float(p[0]), float(p[1]), float(p[2])] for p in points],
                     'closed': False
                 })
             elif isinstance(entity, NURBSSurface):
                 points_2d = entity.sample_points(20, 20)
                 sequence['operations'].append({
                     'type': 'surface',
-                    'points': [[[p[0], p[1], p[2]] for p in row] for row in points_2d],
+                    'points': [[[float(p[0]), float(p[1]), float(p[2])] for p in row] for row in points_2d],
                     'closed_u': True,
                     'closed_v': True
                 })
@@ -43,7 +63,7 @@ class GeometryAdapter:
                     points_2d = surface.sample_points(20, 20)
                     sequence['operations'].append({
                         'type': 'surface',
-                        'points': [[[p[0], p[1], p[2]] for p in row] for row in points_2d],
+                        'points': [[[float(p[0]), float(p[1]), float(p[2])] for p in row] for row in points_2d],
                         'closed_u': True,
                         'closed_v': True
                     })
@@ -51,19 +71,27 @@ class GeometryAdapter:
         return sequence
     
     @staticmethod
-    def from_cad_sequence(sequence: Dict[str, Any]) -> List[Union[NURBSCurve, NURBSSurface]]:
+    def from_cad_sequence(sequence: CADSequence) -> List[Union[NURBSCurve, NURBSSurface]]:
         """Convert CAD sequence back to geometric entities."""
-        entities = []
+        entities: List[Union[NURBSCurve, NURBSSurface]] = []
         
         for op in sequence.get('operations', []):
             if op['type'] == 'curve':
-                points = [(p[0], p[1], p[2]) for p in op['points']]
+                curve_op = cast(CurveOperation, op)
+                points = [(p[0], p[1], p[2]) for p in curve_op['points']]
                 entities.append(NURBSCurve.from_points(points))
             elif op['type'] == 'surface':
-                points_2d = [[(p[0], p[1], p[2]) for p in row] for row in op['points']]
+                surface_op = cast(SurfaceOperation, op)
+                points_2d = [[(p[0], p[1], p[2]) for p in row] for row in surface_op['points']]
                 entities.append(NURBSSurface.from_points(points_2d))
         
         return entities
+
+class FlowerParams(TypedDict):
+    num_petals: int
+    petal_length: float
+    petal_width: float
+    center_radius: float
 
 class ShapeGenerator:
     """High-level interface for generating shapes from text descriptions."""
@@ -71,9 +99,9 @@ class ShapeGenerator:
     def __init__(self):
         self.factory = OrganicShapeFactory()
     
-    def parse_flower_description(self, text: str) -> Dict[str, Any]:
+    def parse_flower_description(self, text: str) -> FlowerParams:
         """Parse text description for flower parameters."""
-        params = {
+        params: FlowerParams = {
             'num_petals': 5,
             'petal_length': 1.0,
             'petal_width': 0.3,

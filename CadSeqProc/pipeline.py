@@ -7,11 +7,15 @@ import json
 import numpy as np
 from PIL import Image
 
-from .intelligent_cad import IntelligentCAD
-from .llm_client import LLMClient
+from .enhanced_geometry.intelligent_cad import IntelligentCAD
+from .enhanced_geometry.llm_client import LLMClient
 from .enhanced_geometry.pattern_recognition import PatternRecognizer, DesignPattern
 from .manufacturing.manufacturing_analyzer import ManufacturingAnalyzer
-from .base import GeometricEntity
+from .enhanced_geometry.base import Point, GeometricEntity
+from .utility.logger import CLGLogger
+
+# Initialize logger
+logger = CLGLogger(__name__).configure_logger()
 
 @dataclass
 class PipelineConfig:
@@ -20,6 +24,7 @@ class PipelineConfig:
     cache_dir: str = "./App/cache"
     output_dir: str = "./App/output"
     debug: bool = False
+    timeout: int = 30
     manufacturing_settings: Dict[str, Any] = field(default_factory=dict)
     pattern_recognition_settings: Dict[str, Any] = field(default_factory=dict)
 
@@ -27,63 +32,59 @@ class CADPipeline:
     """Main pipeline for CAD operations."""
     
     def __init__(self, config: Optional[PipelineConfig] = None):
+        """Initialize pipeline with configuration."""
         self.config = config or PipelineConfig()
-        self.llm_client = LLMClient(model_type=self.config.model_type)
+        self.llm_client = LLMClient(
+            model_type=self.config.model_type,
+            timeout=self.config.timeout
+        )
         self.cad_system = IntelligentCAD(self.llm_client)
         self.pattern_recognizer = PatternRecognizer(self.llm_client)
         self.manufacturing_analyzer = ManufacturingAnalyzer(self.llm_client)
+        self.cache_dir = Path(self.config.cache_dir)
+        self.output_dir = Path(self.config.output_dir)
         
         # Ensure directories exist
-        Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def process(self, input_data: Union[str, Dict, Path]) -> Dict[str, Any]:
-        """Process input through the complete CAD pipeline.
-        
-        Args:
-            input_data: Can be:
-                - Text description of desired CAD model
-                - Dictionary with model specifications
-                - Path to input file (image, CAD file, etc.)
-                
-        Returns:
-            Dictionary containing:
-                - Generated CAD model
-                - Analysis results
-                - Manufacturing recommendations
-                - Pattern recognition results
-        """
+    async def process(self, text_input: str) -> Dict[str, Any]:
+        """Process a text request through the pipeline."""
         try:
-            # 1. Input Processing
-            processed_input = self._process_input(input_data)
+            # Analyze text and generate initial model
+            result = await self.cad_system.analyze_description(text_input)
             
-            # 2. Generate Initial CAD Model
-            model_data = self._generate_cad_model(processed_input)
+            if result["status"] != "success":
+                return {
+                    "success": False,
+                    "error": result.get("message", "Unknown error occurred")
+                }
             
-            # 3. Pattern Recognition
-            patterns = self._analyze_patterns(model_data["geometry"])
+            # Extract parameters
+            parameters = result["parameters"]
             
-            # 4. Manufacturing Analysis
-            manufacturing_data = self._analyze_manufacturing(
-                model_data["geometry"], patterns)
+            # Generate the CAD model
+            model_data = self._generate_cad_model(parameters)
             
-            # 5. Optimization Suggestions
-            optimizations = self._generate_optimizations(
-                model_data["geometry"], patterns, manufacturing_data)
+            # Save the model
+            output_path = self.save_results(model_data)
             
-            # 6. Final Processing
-            result = self._process_results(
-                model_data, patterns, manufacturing_data, optimizations)
-            
-            return result
+            return {
+                "success": True,
+                "model_path": str(output_path),
+                "parameters": parameters,
+                "analysis": {
+                    "manufacturing": parameters.get("manufacturing", {}),
+                    "features": parameters.get("features", []),
+                    "validation": result.get("validation", {})
+                }
+            }
             
         except Exception as e:
-            if self.config.debug:
-                raise
+            logger.error(f"Error in pipeline processing: {str(e)}")
             return {
                 "success": False,
-                "error": str(e),
-                "stage": "pipeline_processing"
+                "error": str(e)
             }
 
     def _process_input(self, input_data: Union[str, Dict, Path]) -> Dict[str, Any]:
@@ -150,30 +151,42 @@ class CADPipeline:
         except Exception as e:
             raise ValueError(f"Error loading JSON file {file_path}: {str(e)}")
 
-    def _generate_cad_model(self, processed_input: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate CAD model from processed input."""
-        if processed_input["type"] == "text":
-            # Use LLM to analyze description
-            analysis = self.cad_system.analyze_description(
-                processed_input["content"])
+    def _generate_cad_model(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate CAD model from parameters."""
+        try:
+            # Extract dimensions
+            dimensions = parameters.get("dimensions", {})
             
-            # Generate geometry
-            geometry = self.cad_system.generate_part_sequence(
-                analysis["metadata"])
-                
-        elif processed_input["type"] == "specs":
-            # Direct generation from specifications
-            geometry = self.cad_system.execute_sequence(
-                processed_input["content"])
-                
-        elif processed_input["type"] == "file":
-            # Process existing geometry
-            geometry = processed_input["content"]["geometry"]
+            # Create a simple model based on parameters
+            model_data = {
+                "type": "solid",
+                "operations": [
+                    {
+                        "type": "cube",
+                        "parameters": {
+                            "width": dimensions.get("width", 10.0),
+                            "height": dimensions.get("height", 10.0),
+                            "depth": dimensions.get("depth", 10.0),
+                            "unit": dimensions.get("unit", "mm")
+                        }
+                    }
+                ]
+            }
             
-        return {
-            "geometry": geometry,
-            "metadata": analysis if "analysis" in locals() else None
-        }
+            # Apply manufacturing constraints
+            if manufacturing := parameters.get("manufacturing", {}):
+                if constraints := manufacturing.get("constraints", []):
+                    for constraint in constraints:
+                        if constraint["type"] == "min_wall_thickness":
+                            model_data["wall_thickness"] = constraint["value"]
+                        elif constraint["type"] == "max_overhang":
+                            model_data["max_overhang"] = constraint["value"]
+            
+            return model_data
+            
+        except Exception as e:
+            logger.error(f"Error generating CAD model: {str(e)}")
+            raise
 
     def _analyze_patterns(self, geometry: GeometricEntity) -> List[DesignPattern]:
         """Analyze geometry for patterns."""
@@ -258,19 +271,66 @@ class CADPipeline:
                 
         return best_process
 
-    def save_results(self, results: Dict[str, Any], output_path: Optional[Path] = None) -> Path:
-        """Save pipeline results to file."""
-        if output_path is None:
-            output_path = Path(self.config.output_dir) / "results.json"
+    def save_results(self, model_data: Dict[str, Any], output_path: Optional[Path] = None) -> Path:
+        """Save the generated model."""
+        try:
+            if output_path is None:
+                output_path = self.output_dir / "output.stl"
             
-        # Save geometry
-        if "geometry" in results:
-            geo_path = output_path.parent / "model.step"
-            self.cad_system.export_geometry(results["geometry"], geo_path)
-            results["geometry"] = str(geo_path)
+            # Save model data as JSON for now
+            with open(output_path.with_suffix(".json"), "w") as f:
+                json.dump(model_data, f, indent=2)
             
-        # Save complete results
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
+            # TODO: Implement actual STL generation
+            # For now, create a dummy STL file
+            with open(output_path, "w") as f:
+                f.write("solid cube\n")
+                f.write("  facet normal 0 0 0\n")
+                f.write("    outer loop\n")
+                f.write("      vertex 0 0 0\n")
+                f.write("      vertex 1 0 0\n")
+                f.write("      vertex 1 1 0\n")
+                f.write("    endloop\n")
+                f.write("  endfacet\n")
+                f.write("endsolid cube\n")
             
-        return output_path 
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"Error saving results: {str(e)}")
+            raise
+
+    def analyze_model(self, model_path: Path) -> Dict[str, Any]:
+        """Analyze an existing CAD model."""
+        try:
+            # Load the model
+            geometry = self.cad_system.load_model(str(model_path))
+            
+            # Analyze patterns
+            pattern_result = self.cad_system.analyze_patterns(geometry)
+            
+            # Analyze manufacturability
+            manufacturing_analysis = self.manufacturing_analyzer.analyze(
+                geometry,
+                pattern_result.get("parameters", {})
+            )
+            
+            # Generate optimization suggestions
+            optimizations = self.cad_system.suggest_optimizations(
+                geometry,
+                pattern_result,
+                manufacturing_analysis
+            )
+            
+            return {
+                "success": True,
+                "patterns": pattern_result.get("patterns", []),
+                "manufacturing": manufacturing_analysis,
+                "optimizations": optimizations
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            } 

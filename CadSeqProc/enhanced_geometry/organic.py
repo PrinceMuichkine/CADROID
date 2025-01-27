@@ -84,7 +84,7 @@ class OrganicSurface(BaseGeometry):
             elif deform['type'] == 'bumps':
                 point += self._apply_bumps(u, v, deform)
         
-        return point.tolist()
+        return point.astype(float).tolist()
     
     def _apply_random_deform(self, u: float, v: float,
                            deform: Dict[str, Any]) -> np.ndarray:

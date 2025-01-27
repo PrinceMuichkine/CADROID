@@ -2,6 +2,8 @@ import torch
 import copy
 import torch.nn as nn
 import os, sys
+from typing import Dict, Any, Optional, Union, List, Tuple
+from torch import Tensor
 
 sys.path.append("..")
 sys.path.append("/".join(os.path.abspath(__file__).split("/")[:-3]))
@@ -12,90 +14,81 @@ from Cad_VLM.models.layers.functional import FeedForwardLayer
 from rich import print
 from Cad_VLM.models.layers.utils_decode import generate_attention_mask
 from Cad_VLM.models.utils import count_parameters
-from typing import Optional
 
 
-class TextAdaptiveLayer(nn.Module):
-    """
-    Adaptive Layer for Text Embeddings
+class AdaptiveLayer(nn.Module):
+    """Adaptive attention layer for multi-modal feature fusion."""
 
-    """
-
-    def __init__(self, in_dim: int, out_dim: int, num_heads: int, dropout: float):
-        super(TextAdaptiveLayer, self).__init__()
-
-        # Multi-Head Self Attention for CAD Sequence
-        # TODO: Check if Flash Attention is implemented
-        self.sa_seq = MultiHeadAttention(
-            input_dim=in_dim,
-            embed_dim=in_dim,
-            dropout=dropout,
+    def __init__(
+        self,
+        input_dim: int,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        device: str = "cuda",
+    ) -> None:
+        super().__init__()
+        
+        # Attention layers
+        self.self_attn = MultiHeadAttention(
+            input_dim=input_dim,
+            embed_dim=input_dim,
             num_heads=num_heads,
+            dropout=dropout,
         )
-
-        # LayerNormalization
-        self.norm_seq = nn.ModuleDict(
-            {"norm_1": nn.LayerNorm(in_dim), "norm_2": nn.LayerNorm(in_dim)}
-        )
-
+        
+        # Layer normalization
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
+        
+        # Feed forward layer
+        self.feed_forward = FeedForwardLayer(input_dim)
+        
         # Dropout
-        self.dp_seq = nn.ModuleDict(
-            {"dropout_1": nn.Dropout(dropout), "dropout_2": nn.Dropout(dropout)}
-        )
-
-        # Feed forward Networks
-        self.ffl_seq = FeedForwardLayer(input_dim=in_dim)
-
-        if in_dim != out_dim:
-            # Downsampler
-            self.downsampler = nn.Linear(in_dim, out_dim)
-
-        # Attention Scores
-        self.attention_scores = dict()
-
+        self.dropout = nn.Dropout(dropout)
+        
+        # Device
+        self.device = device
+        
+        # Attention scores storage
+        self.attention_scores: Dict[str, Dict[str, Tensor]] = {}
+        
     def forward(
         self,
-        T: Optional[torch.Tensor],
-        mask_prompt_dict: dict,
+        x: Tensor,
+        mask: Optional[Tensor] = None,
         metadata: bool = False,
-    ):
+    ) -> Tuple[Tensor, Optional[Dict[str, Any]]]:
         """
-        T: tensor of shape (bs, num_seq, emb_dim). Text Embedding
-        mask_prompt_dict: dictionary with keys "attn_mask", "key_padding_mask"
-        metadata: boolean. To save attention weights
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, input_dim)
+            mask: Optional attention mask
+            metadata: Whether to return attention metadata
+        Returns:
+            Tuple of:
+            - Output tensor of shape (batch_size, seq_len, input_dim)
+            - Optional metadata dictionary containing attention scores
         """
+        # Self attention
+        x2 = self.norm1(x)
+        x2, self_attn_weights = self.self_attn(
+            x2, x2, x2,
+            need_weights=metadata,
+            attn_mask=mask,
+        )
+        x = x + self.dropout(x2)
+        
+        # Feed forward
+        x2 = self.norm2(x)
+        x = x + self.dropout(self.feed_forward(x2))
+        
+        # Store attention scores if needed
+        if metadata and self_attn_weights is not None:
+            self.attention_scores["self_attention"] = {"weights": self_attn_weights}
+            return x, {"attention_scores": self.attention_scores}
+            
+        return x, None
 
-        # self_attn_mask_dict = mask_cad_dict.copy()
-
-        # ? <----------  TEXT EMBEDDING SELF-ATTENTION  ---------->
-        T2 = self.norm_seq["norm_1"](T)  # (bs,num_seq,emb_dim)
-        # exit()
-        T2, T_score = self.sa_seq(
-            T2,
-            T2,
-            T2,
-            key_padding_mask=mask_prompt_dict["key_padding_mask"],
-            attn_mask=mask_prompt_dict["attn_mask"],
-        )  # (bs,num_seq,emb_dim) (Self-Attention)
-
-        # (bs,num_seq,emb_dim) (Dropout + Addition)
-        T = T + self.dp_seq["dropout_1"](T2)
-        T2 = self.norm_seq["norm_2"](T)  # (bs,num_seq,emb_dim) (Normalization)
-
-        # ? <---------- FEED-FORWARD + DROPOUT + ADDITION + DOWN-SAMPLER    ---------->
-        T = T + self.dp_seq["dropout_2"](self.ffl_seq(T2))
-
-        if hasattr(self, "downsampler"):
-            T = self.downsampler(T)
-
-        if metadata:
-            # Add the cross attention scores (metadata)
-            self.attention_scores["text_sattn"] = T_score
-            return T, self.attention_scores
-        else:
-            return T, None
-
-    def total_parameters(self, description=False, in_millions=False):
+    def total_parameters(self, description: bool = False, in_millions: bool = False) -> None:
         num_params = count_parameters(self, description)
         if in_millions:
             num_params_million = num_params / 1_000_000  # Convert to millions
@@ -105,15 +98,15 @@ class TextAdaptiveLayer(nn.Module):
             print(f"Number of Parameters: {num_params}")
 
     @staticmethod
-    def from_config(config):
-        return TextAdaptiveLayer(**config)
+    def from_config(config: Dict[str, Any]) -> 'AdaptiveLayer':
+        return AdaptiveLayer(**config)
 
 
 if __name__ == "__main__":
-    adaptive_layer = TextAdaptiveLayer(4096, 4096, 8, 0.1).cuda()
+    adaptive_layer = AdaptiveLayer(4096).cuda()
     input_tensor = torch.rand(32, 512, 4096).cuda()
 
-    attn_mask = generate_attention_mask(512)
+    attn_mask = generate_attention_mask(512, 512)
 
     output, attn_weight = adaptive_layer(
         input_tensor,

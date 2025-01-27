@@ -42,6 +42,7 @@ from OCC.Core.AIS import AIS_Shape
 from OCC.Core.Quantity import Quantity_Color,Quantity_TOC_RGB
 import torch.nn.functional as F
 from OCC.Core.BRepTools import breptools_Write
+from torch import Tensor
 
 
 
@@ -66,19 +67,23 @@ def top_p_sampling(logits, top_p=0.9):
     sampled_indices = torch.multinomial(sampled_probs.view(1, -1), 1).view(1, 1, 1)
     return sampled_indices
 
-def choose_best_index(chamfer_distances,eps=1):
-    min_cd=np.min(chamfer_distances)
-    argmin_cd=np.argmin(chamfer_distances)
-    sorted_indices=np.argsort(chamfer_distances)
-    if np.sum(chamfer_distances)==-len(chamfer_distances):
-        return 0 # All of them are invalid
-
-    elif chamfer_distances[0]<eps and chamfer_distances[0]>=0:
+def choose_best_index(chamfer_distances, eps=1):
+    """Choose best index based on chamfer distances."""
+    # Check if all distances are invalid
+    if np.sum(chamfer_distances) == -len(chamfer_distances):
         return 0
-    else: # Check if it is invalid, otherwise return the next best
-        for i in sorted_indices:
-            if chamfer_distances[i]>=0:
-                return i
+        
+    # Check if first distance is valid and within epsilon
+    if chamfer_distances[0] >= 0:
+        if chamfer_distances[0] < eps:
+            return 0
+            
+    # Find first valid distance from sorted indices
+    sorted_indices = np.argsort(chamfer_distances)
+    for i in sorted_indices:
+        if chamfer_distances[i] >= 0:
+            return i
+            
     return 0
 
 def write_ply_with_binary_values(points, binary_value, filename, text=False):
@@ -854,7 +859,6 @@ def get_orientation(p1, p2, p3):
     elif cross_product < 0:
         return "clockwise"
     else:
-        #print(p1,p2,p3)
         return "collinear"
 
 def create_paired_token_curve(sketch):
@@ -1420,218 +1424,96 @@ def write_ply(points, filename, text=False):
     with open(filename, mode='wb') as f:
         PlyData([el], text=text).write(f)
 
-def generate_attention_mask(sz1: int, sz2: int = None, device='cpu', mask_start_token=True):
-    r"""Generate an attention mask for the sequence. The masked positions are filled with float('-inf').
-        Unmasked positions are filled with float(0.0).
+def generate_attention_mask(
+    tgt_len: int,
+    src_len: int,
+    device: Optional[str] = None,
+) -> Tensor:
+    """Generate causal attention mask.
+    
+    Args:
+        tgt_len: Target sequence length
+        src_len: Source sequence length
+        device: Optional device to create tensor on
+    Returns:
+        Attention mask tensor of shape (tgt_len, src_len)
     """
-    if sz2 is None:
-        sz2 = sz1
-    mask = torch.triu(torch.full((sz1, sz2), float(
-        '-inf'), device=device), diagonal=1)
-
-    # Add Mask for start token
-    if mask_start_token:
-        mask[1:, 0] = float("-inf")
+    device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    mask = torch.ones(tgt_len, src_len, device=device)
+    mask = torch.triu(mask, diagonal=1)
+    mask = mask.masked_fill(mask == 1, float('-inf'))
     return mask
 
-def generate_start_token_mask(sz1: int, sz2: int, device='cpu'):
-    mask = generate_attention_mask(sz1, sz2, device, True)
-    mask[:, 1:] = 0
-    return mask
+def create_padding_mask(
+    seq: Tensor,
+    pad_idx: int = 0,
+) -> Tensor:
+    """Create padding mask for sequence.
+    
+    Args:
+        seq: Input sequence tensor
+        pad_idx: Index used for padding
+    Returns:
+        Boolean mask tensor with True at padding positions
+    """
+    return (seq == pad_idx).bool()
+
+def create_subsequent_mask(
+    size: int,
+    device: Optional[str] = None,
+) -> Tensor:
+    """Create triangular causal mask.
+    
+    Args:
+        size: Size of square mask
+        device: Optional device to create tensor on
+    Returns:
+        Boolean mask tensor of shape (size, size)
+    """
+    device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    mask = torch.triu(torch.ones(size, size, device=device), diagonal=1)
+    return mask.bool()
+
+def create_combined_mask(
+    seq: Tensor,
+    pad_idx: int = 0,
+    device: Optional[str] = None,
+) -> Tensor:
+    """Create combined padding and causal mask.
+    
+    Args:
+        seq: Input sequence tensor
+        pad_idx: Index used for padding
+        device: Optional device to create tensor on
+    Returns:
+        Combined boolean mask tensor
+    """
+    device = device or seq.device
+    padding_mask = create_padding_mask(seq, pad_idx)
+    subsequent_mask = create_subsequent_mask(seq.size(1), device)
+    return padding_mask.unsqueeze(1).unsqueeze(2) | subsequent_mask
 
 def round_float(point):
-    point['x'] = round(point['x'], 9)
-    point['y'] = round(point['y'], 9)
-    point['z'] = round(point['z'], 9)
-    return
+    """Round floating point coordinates."""
+    return (
+        round(point[0], 6),
+        round(point[1], 6),
+        round(point[2], 6)
+    )
 
 def find_files(folder, extension):
-    return sorted([Path(os.path.join(folder, f)) for f in os.listdir(folder) if f.endswith(extension)])
-
-def plot(shape_list):
-    pyqt5_display, start_display, add_menu, add_function_to_menu = init_display(
-        'qt-pyqt5')
-    for shape in shape_list:
-        pyqt5_display.DisplayShape(shape, update=True)
-    start_display()
-
-def save_to_json(filepath, data):
-    with open(filepath, 'w+') as f:
-        json.dump(data, f, indent=2)
-
-def save_to_pickle(data, filename):
-    # Check if file exists
-    if os.path.isfile(filename):
-        with open(filename, 'rb') as f:
-            existing_data = pickle.load(f)
-        # Append new data to existing list
-        existing_data += f"\n{data}\n"
-        data = existing_data
-
-    # Save data to pickle file
-    with open(filename, 'wb') as f:
-        pickle.dump(data, f)
-
-def brep2mesh(a_shape, mode="ascii", linear_deflection=0.001, angular_deflection=0.5):
-    """Create a mesh from brep
-    a_shape: the topods_shape to export
-    filename: the filename
-    mode: optional, "ascii" by default. Can either be "binary"
-    linear_deflection: optional, default to 0.001. Lower, more occurate mesh
-    angular_deflection: optional, default to 0.5. Lower, more accurate_mesh
-    """
-    if a_shape.IsNull():
-        raise AssertionError("Shape is null.")
-    if mode not in ["ascii", "binary"]:
-        raise AssertionError("mode should be either ascii or binary")
-    # first mesh the shape
-    mesh = BRepMesh_IncrementalMesh(
-        a_shape, linear_deflection, False, angular_deflection, True)
-    # mesh.SetDeflection(0.05)
-    mesh.Perform()
-    if not mesh.IsDone():
-        raise AssertionError("Mesh is not done.")
-    name = random.randint(0, 999999)
-    filename=f".temp_{name}.stl"
-    stl_exporter = StlAPI_Writer()
-    if mode == "ascii":
-        stl_exporter.SetASCIIMode(True)
-    else:  # binary, just set the ASCII flag to False
-        stl_exporter.SetASCIIMode(False)
-    stl_exporter.Write(a_shape, filename)
-
-    if not os.path.isfile(filename):
-        raise IOError(f"File not written to disk on path {filename}")
-    mesh=trimesh.load(filename)
-    os.remove(filename)
-    return mesh
-
-def write_stl_file(a_shape, filename, mode="ascii", linear_deflection=0.001, angular_deflection=0.5):
-    """ export the shape to a STL file
-    Be careful, the shape first need to be explicitely meshed using BRepMesh_IncrementalMesh
-    a_shape: the topods_shape to export
-    filename: the filename
-    mode: optional, "ascii" by default. Can either be "binary"
-    linear_deflection: optional, default to 0.001. Lower, more occurate mesh
-    angular_deflection: optional, default to 0.5. Lower, more accurate_mesh
-    """
-    if a_shape.IsNull():
-        raise AssertionError("Shape is null.")
-    if mode not in ["ascii", "binary"]:
-        raise AssertionError("mode should be either ascii or binary")
-    if os.path.isfile(filename):
-        print("Warning: %s file already exists and will be replaced" % filename)
-    # first mesh the shape
-    mesh = BRepMesh_IncrementalMesh(
-        a_shape, linear_deflection, False, angular_deflection, True)
-    # mesh.SetDeflection(0.05)
-    mesh.Perform()
-    if not mesh.IsDone():
-        raise AssertionError("Mesh is not done.")
-
-    stl_exporter = StlAPI_Writer()
-    if mode == "ascii":
-        stl_exporter.SetASCIIMode(True)
-    else:  # binary, just set the ASCII flag to False
-        stl_exporter.SetASCIIMode(False)
-    stl_exporter.Write(a_shape, filename)
-
-    if not os.path.isfile(filename):
-        raise IOError(f"File not written to disk on path {filename}")
-
-def same_plane(plane1, plane2):
-    same = True
-    trans1 = plane1['pt']
-    trans2 = plane2['pt']
-    for key in trans1.keys():
-        v1 = trans1[key]
-        v2 = trans2[key]
-        if v1['x'] != v2['x'] or v1['y'] != v2['y'] or v1['z'] != v2['z']:
-            same = False
-    return same
-
-def create_xyz(xyz):
-    return gp_XYZ(
-        xyz["x"],
-        xyz["y"],
-        xyz["z"]
-    )
-
-def get_ax3(transform_dict):
-    origin = create_xyz(transform_dict["origin"])
-    x_axis = create_xyz(transform_dict["x_axis"])
-    y_axis = create_xyz(transform_dict["y_axis"])
-    z_axis = create_xyz(transform_dict["z_axis"])
-    # Create new coord (orig, Norm, x-axis)
-    axis3 = gp_Ax3(gp_Pnt(origin), gp_Dir(z_axis), gp_Dir(x_axis))
-    return axis3
-
-def get_transform(transform_dict):
-    axis3 = get_ax3(transform_dict)
-    transform_to_local = gp_Trsf()
-    transform_to_local.SetTransformation(axis3)
-    return transform_to_local.Inverted()
-
-def create_sketch_plane(transform_dict):
-    axis3 = get_ax3(transform_dict)
-    return gp_Pln(axis3)
-
-def create_point(point_dict, transform=None):
-    pt2d = gp_Pnt(
-        point_dict["x"],
-        point_dict["y"],
-        point_dict["z"]
-    )
-    if transform is not None:
-        return pt2d.Transformed(transform)
-    else:
-        return pt2d
-
-def create_vector(vec_dict, transform):
-    vec2d = gp_Vec(
-        vec_dict["x"],
-        vec_dict["y"],
-        vec_dict["z"]
-    )
-    return vec2d.Transformed(transform)
-
-def create_unit_vec(vec_dict, transform):
-    vec2d = gp_Dir(
-        vec_dict["x"],
-        vec_dict["y"],
-        vec_dict["z"]
-    )
-    return vec2d.Transformed(transform)
-
-def dequantize_verts(verts, n_bits=8, min_range=-0.5, max_range=0.5, add_noise=False):
-    """Convert quantized vertices to floats."""
-    range_quantize = 2**n_bits - 1
-    verts = verts.astype('float32')
-    verts = verts * (max_range - min_range) / range_quantize + min_range
-    return verts
-
-def quantize(data, n_bits=8, min_range=-1.0, max_range=1.0):
-    """Convert vertices in [-1., 1.] to discrete values in [0, n_bits**2 - 1]."""
-    range_quantize = 2**n_bits - 1
-    data_quantize = (data - min_range) * range_quantize / \
-        (max_range - min_range)
-    data_quantize = np.clip(data_quantize, a_min=0,
-                            a_max=range_quantize)  # clip values
-    return data_quantize.astype('int32')
-
-def find_files(folder, extension):
+    """Find files with given extension in folder."""
     return sorted([Path(os.path.join(folder, f)) for f in os.listdir(folder) if f.endswith(extension)])
 
 def find_files_path(folder, extension):
+    """Find file paths with given extension in folder."""
     return sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(extension)])
 
 def quantize(data, n_bits=8, min_range=-1.0, max_range=1.0):
     """Convert vertices in [-1., 1.] to discrete values in [0, n_bits**2 - 1]."""
     range_quantize = 2**n_bits - 1
-    data_quantize = (data - min_range) * range_quantize / \
-        (max_range - min_range)
-    data_quantize = np.clip(data_quantize, a_min=0,
-                            a_max=range_quantize)  # clip values
+    data_quantize = (data - min_range) * range_quantize / (max_range - min_range)
+    data_quantize = np.clip(data_quantize, a_min=0, a_max=range_quantize)
     return data_quantize.astype('int32')
 
 def normalize_vertices_scale(vertices):
@@ -1726,16 +1608,12 @@ def split_sequence(data, seq_len):
     return subsequences
 
 def rotation_mat_to_euler_from_vec(vec, if_quantize=True, n_bit=N_BIT):
-    """
-    vec: Numpy array of Dimension (9,1)
-
-    returns:
-    theta,phi,gamma
-    """
+    """Convert rotation matrix to Euler angles."""
     mat = vec.reshape(3, 3)
     angles = R.from_matrix(mat).as_euler("xyz", degrees=False)
-
+    theta, phi, gamma = angles
+    
     if if_quantize:
         theta = quantize(theta, n_bits=6, min_range=-1)
-
+        
     return theta, phi, gamma

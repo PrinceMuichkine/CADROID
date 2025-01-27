@@ -4,8 +4,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import json
 import numpy as np  # type: ignore
-from CadSeqProc.base import GeometricEntity, Point
-from CadSeqProc.enhanced_geometry.pattern_recognition import DesignPattern
+from ..enhanced_geometry.base import GeometricEntity, Point
+from ..enhanced_geometry.pattern_recognition import DesignPattern
 
 @dataclass
 class ManufacturingConstraint:

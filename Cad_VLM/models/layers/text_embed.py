@@ -1,6 +1,8 @@
-import torch.nn as nn
+from typing import Dict, Any, Optional, Union, List, Tuple
 import torch
-from transformers import BertTokenizer, BertModel
+from torch import Tensor
+import torch.nn as nn
+from transformers import AutoTokenizer, AutoModel
 from ..utils import get_device, get_device_str
 
 
@@ -19,36 +21,59 @@ def prepare_cross_attention_mask_batch(mask, cad_seq_len=271):
     return mask
 
 class TextEmbedder(nn.Module):
-    def __init__(self, model_name:str, cache_dir:str, max_seq_len:int):
-        super(TextEmbedder, self).__init__()
-        
-        self.device = get_device()
-        self.max_seq_len = max_seq_len
-        self.model_name = MODEL_NAME_DICT.get(model_name, "bert_large_uncased")
-        self.tokenizer = BertTokenizer.from_pretrained(self.model_name, cache_dir=cache_dir)
-        self.model = BertModel.from_pretrained(
-                self.model_name, cache_dir=cache_dir, max_position_embeddings=max_seq_len
-            ).to(self.device)
+    """Text embedding layer using pretrained transformer model."""
     
-    def get_embedding(self, texts:list[str]):
+    def __init__(
+        self,
+        model_name: str = "bert-base-uncased",
+        max_length: int = 512,
+        output_dim: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        
+        # Load tokenizer and model
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        
+        # Output projection if needed
+        self.output_dim = output_dim
+        if output_dim is not None:
+            self.proj = nn.Linear(self.model.config.hidden_size, output_dim)
+        
+        # Config
+        self.max_length = max_length
+        
+    def forward(self, texts: Union[str, List[str]]) -> Tensor:
+        """
+        Args:
+            texts: Input text or list of texts
+        Returns:
+            Text embeddings tensor of shape:
+            - (batch_size, seq_len, hidden_size) if output_dim is None
+            - (batch_size, seq_len, output_dim) if output_dim is specified
+        """
+        # Handle single text input
         if isinstance(texts, str):
             texts = [texts]
-        with torch.no_grad():
-                input_ids = self.tokenizer(
-                    texts,
-                    return_tensors="pt",
-                    max_length=self.max_seq_len,
-                    truncation=True,
-                    padding=True,
-                ).to(self.device)
-                all_output = self.model(**input_ids)
-
-                embedding = all_output[0]
-                key_padding_mask = (
-                    (input_ids["attention_mask"] == 0)
-                )
-                
-        return embedding, key_padding_mask
+            
+        # Tokenize
+        tokens = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        )
+        
+        # Get embeddings
+        outputs = self.model(**tokens)
+        embeddings = outputs.last_hidden_state
+        
+        # Project if needed
+        if self.output_dim is not None:
+            embeddings = self.proj(embeddings)
+            
+        return embeddings
 
     @staticmethod
     def from_config(config: dict):

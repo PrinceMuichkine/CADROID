@@ -106,7 +106,7 @@ class NURBSCurve(BaseGeometry):
             point += N[i] * weight * self.control_points[span - p + i]
             w_sum += N[i] * weight
         
-        return (point / w_sum).tolist()
+        return (point / w_sum).astype(float).tolist()
     
     def sweep(self, width: float) -> 'NURBSSurface':
         """Create surface by sweeping curve."""
@@ -239,6 +239,23 @@ class NURBSSurface(BaseGeometry):
             self.control_points.shape[1] - 1,
             degree_v
         )
+        
+        self._cached_bbox: Optional[BoundingBox] = None
+    
+    @property
+    def bounding_box(self) -> BoundingBox:
+        """Get the bounding box of the surface."""
+        if self._cached_bbox is None:
+            # Calculate min and max points from control points
+            min_coords = np.min(self.control_points, axis=(0, 1))
+            max_coords = np.max(self.control_points, axis=(0, 1))
+            
+            self._cached_bbox = BoundingBox(
+                Point(*min_coords),
+                Point(*max_coords)
+            )
+        
+        return self._cached_bbox
     
     @classmethod
     def from_points(cls, points: List[List[List[float]]],
@@ -268,7 +285,7 @@ class NURBSSurface(BaseGeometry):
                                           span_v - self.degree_v + j])
                 w_sum += Nu[i] * Nv[j] * weight
         
-        return (point / w_sum).tolist()
+        return (point / w_sum).astype(float).tolist()
     
     def _generate_knot_vector(self, n: int, p: int) -> np.ndarray:
         """Generate uniform knot vector."""
@@ -356,7 +373,7 @@ class NURBSSurface(BaseGeometry):
                 curvature = self._compute_curvature(u, v)
                 if curvature > 1.0:  # Threshold for high curvature
                     point = self.point_at(u, v)
-                    stress_points.append(tuple(point))  # type: ignore
+                    stress_points.append(tuple(float(x) for x in point))
         
         return stress_points
     

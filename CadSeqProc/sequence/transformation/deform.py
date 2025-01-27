@@ -4,7 +4,7 @@ Deformation operations for geometric transformations.
 
 import numpy as np
 from typing import List, Tuple, Optional
-from ...geometry.nurbs import NURBSCurve, NURBSSurface
+from ...enhanced_geometry.nurbs import NURBSCurve, NURBSSurface
 
 class DeformationOp:
     """Base class for deformation operations."""

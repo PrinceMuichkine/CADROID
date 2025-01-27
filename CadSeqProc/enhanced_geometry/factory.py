@@ -1,50 +1,105 @@
 """
-Factory for creating geometric and organic shapes.
+Factory for creating enhanced geometry objects.
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import List, Dict, Any, Optional, Union, cast, Tuple, Sequence
 import numpy as np
-from .base import BaseGeometry, Point, BoundingBox
+from numpy.typing import NDArray
+from ..utility.logger import CLGLogger
+from .base import NURBSEntity, BaseGeometry, Point
 from .nurbs import NURBSCurve, NURBSSurface
 from .organic import OrganicSurface
-from ..utility.logger import setup_logger
 
-logger = setup_logger(__name__)
+# Initialize logger with module name
+logger = CLGLogger(__name__).configure_logger()
+
+# Type alias for 3D point coordinates
+Point = Tuple[float, float, float]
+
+def convert_points_to_float_lists(points: Sequence[Point]) -> List[List[float]]:
+    """Convert sequence of point tuples to list of float lists."""
+    # Convert points to numpy array
+    points_array = np.array(points, dtype=np.float64)
+    # Convert back to nested list and cast to expected type
+    return cast(List[List[float]], points_array.tolist())
+
+class GeometryFactory:
+    """Factory for creating geometric entities."""
+    
+    @staticmethod
+    def create_curve_from_points(points: Sequence[Point], degree: int = 3) -> NURBSCurve:
+        """Create a NURBS curve from points.
+        
+        Args:
+            points: List of control points as (x,y,z) tuples
+            degree: Degree of the curve
+        Returns:
+            NURBS curve
+        """
+        float_points = convert_points_to_float_lists(points)
+        return NURBSCurve.from_points(float_points, degree=degree)
+    
+    @staticmethod
+    def create_surface_from_points(points: Sequence[Sequence[Point]], degree_u: int = 3, degree_v: int = 3) -> NURBSSurface:
+        """Create a NURBS surface from points.
+        
+        Args:
+            points: Grid of control points as (x,y,z) tuples
+            degree_u: Degree in u direction
+            degree_v: Degree in v direction
+        Returns:
+            NURBS surface
+        """
+        # Convert each row of points
+        float_points = [convert_points_to_float_lists(row) for row in points]
+        return NURBSSurface.from_points(float_points, degree_u=degree_u, degree_v=degree_v)
 
 class OrganicShapeFactory:
-    """Factory for creating organic shapes."""
+    """Factory for creating organic and parametric shapes."""
     
-    def create_from_params(self, params: Dict[str, Any]) -> BaseGeometry:
-        """Create shape from parameters."""
+    def __init__(self) -> None:
+        """Initialize the shape factory."""
+        self.logger = logger
+    
+    def create_from_params(self, parameters: Dict[str, Any]) -> BaseGeometry:
+        """Create geometry from parameters."""
         try:
-            # Extract basic parameters
-            shape_type = params.get('shape_type', 'generic')
-            scale = params.get('scale_factor', 1.0)
-            detail_level = params.get('detail_level', 0.5)
+            # Extract basic dimensions
+            dimensions = parameters.get("dimensions", {})
+            if not dimensions:
+                # If no dimensions provided, try to get them from features
+                if features := parameters.get("features", []):
+                    for feature in features:
+                        if feature.get("type") == "cube" and "dimensions" in feature:
+                            dimensions = feature["dimensions"]
+                            break
             
-            if shape_type == 'flower':
-                return self._create_flower(
-                    num_petals=params.get('num_petals', 5),
-                    petal_length=0.5 * scale,
-                    petal_width=0.2 * scale,
-                    detail_level=detail_level
-                )
-            elif shape_type == 'leaf':
-                return self._create_leaf(
-                    length=1.0 * scale,
-                    width=0.5 * scale,
-                    detail_level=detail_level
-                )
-            else:
-                return self._create_generic_organic(
-                    scale=scale,
-                    detail_level=detail_level
-                )
-                
+            # Create base geometry
+            geometry = BaseGeometry(dimensions)
+            
+            # Set features
+            geometry.features = parameters.get("features", [])
+            
+            # Apply manufacturing constraints
+            if manufacturing := parameters.get("manufacturing", {}):
+                if constraints := manufacturing.get("constraints", []):
+                    for constraint in constraints:
+                        if constraint["type"] == "min_wall_thickness":
+                            geometry = geometry.thicken_walls(constraint["value"])
+                        elif constraint["type"] == "max_overhang":
+                            geometry = geometry.reduce_overhangs(constraint["value"])
+            
+            return geometry
+            
         except Exception as e:
-            logger.error(f"Error creating organic shape: {str(e)}")
-            # Return a simple fallback shape
-            return self._create_generic_organic(scale=1.0, detail_level=0.3)
+            self.logger.error(f"Error creating geometry: {str(e)}")
+            # Return a default cube if something goes wrong
+            return BaseGeometry({
+                "width": 10.0,
+                "height": 10.0,
+                "depth": 10.0,
+                "unit": "mm"
+            })
     
     def _create_flower(self, num_petals: int, petal_length: float,
                       petal_width: float, detail_level: float) -> OrganicSurface:
@@ -210,3 +265,21 @@ class OrganicShapeFactory:
                 veins.append(vein)
         
         return veins 
+
+    @staticmethod
+    def create_surface(points: Sequence[Sequence[Point]], degree_u: int = 3, degree_v: int = 3) -> OrganicSurface:
+        """Create an organic surface from points.
+        
+        Args:
+            points: Grid of control points as (x,y,z) tuples
+            degree_u: Degree in u direction
+            degree_v: Degree in v direction
+        Returns:
+            Organic surface
+        """
+        # Convert each row of points
+        float_points = [convert_points_to_float_lists(row) for row in points]
+        # Create NURBS surface first
+        nurbs_surface = NURBSSurface.from_points(float_points, degree_u=degree_u, degree_v=degree_v)
+        # Create organic surface from NURBS surface
+        return OrganicSurface(nurbs_surface) 
